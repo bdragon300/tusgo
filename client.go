@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,19 +12,29 @@ import (
 )
 
 func NewClient(client *http.Client, baseURL *url.URL) *Client {
-	c := &Client{BaseURL: baseURL}
+	c := &Client{}
 	if client == nil {
 		c.client = http.DefaultClient
 	}
+	if baseURL == nil {
+		c.BaseURL, _ = url.Parse("http://example.com/files")
+	}
+	c.ProtocolVersion = "1.0.0"
+	c.GetRequest = newRequest
 	return c
 }
+
+type GetRequestFunc func(method, url string, body io.Reader, tusClient *Client, httpClient *http.Client, capabilities *ServerCapabilities) (*http.Request, error)
 
 type Client struct {
 	BaseURL         *url.URL
 	ProtocolVersion string
-	client          *http.Client
-	capabilities    *ServerCapabilities
-	ctx             context.Context
+
+	GetRequest GetRequestFunc
+
+	client       *http.Client
+	capabilities *ServerCapabilities
+	ctx          context.Context
 }
 
 func (c *Client) WithContext(ctx context.Context) *Client {
@@ -32,6 +43,9 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 }
 
 func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
+	if f == nil {
+		panic("f is nil")
+	}
 	if err = c.ensureExtension("creation"); err != nil {
 		return
 	}
@@ -42,7 +56,7 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 		return
 	}
 	u := c.BaseURL.ResolveReference(loc).String()
-	if req, err = http.NewRequest(http.MethodPost, u, nil); err != nil {
+	if req, err = c.GetRequest(http.MethodPost, u, nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
 
@@ -66,6 +80,9 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 }
 
 func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
+	if f == nil {
+		panic("f is nil")
+	}
 	if err = c.ensureExtension("termination"); err != nil {
 		return
 	}
@@ -76,7 +93,7 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 		return
 	}
 	u := c.BaseURL.ResolveReference(loc).String()
-	if req, err = http.NewRequest(http.MethodDelete, u, nil); err != nil {
+	if req, err = c.GetRequest(http.MethodDelete, u, nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
 	if response, err = c.tusRequest(req); err != nil {
@@ -86,9 +103,9 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 	return
 }
 
-func (c *Client) GetCapabilities() (caps *ServerCapabilities, response *http.Response, err error) {
+func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 	var req *http.Request
-	if req, err = http.NewRequest(http.MethodOptions, c.BaseURL.String(), nil); err != nil {
+	if req, err = c.GetRequest(http.MethodOptions, c.BaseURL.String(), nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
 	if response, err = c.tusRequest(req); err != nil {
@@ -99,25 +116,29 @@ func (c *Client) GetCapabilities() (caps *ServerCapabilities, response *http.Res
 		return
 	}
 
-	caps = &ServerCapabilities{}
+	c.capabilities = &ServerCapabilities{}
 	if v := response.Header.Get("Tus-Max-Size"); v != "" {
-		if caps.MaxSize, err = strconv.ParseInt(v, 10, 64); err != nil {
+		if c.capabilities.MaxSize, err = strconv.ParseInt(v, 10, 64); err != nil {
 			err = fmt.Errorf("cannot parse Tus-Max-Size integer value: %w", err)
 			return
 		}
 	}
 	if v := response.Header.Get("Tus-Extension"); v != "" {
-		caps.Extensions = strings.Split(v, ",")
+		c.capabilities.Extensions = strings.Split(v, ",")
 	}
 	if v := response.Header.Get("Tus-Version"); v != "" {
-		caps.ProtocolVersions = strings.Split(v, ",")
+		c.capabilities.ProtocolVersions = strings.Split(v, ",")
 	}
 
 	return
 }
 
+func (c *Client) Capabilities() *ServerCapabilities {
+	return c.capabilities
+}
+
 func (c *Client) tusRequest(req *http.Request) (response *http.Response, err error) {
-	if req.Method != http.MethodOptions {
+	if req.Method != http.MethodOptions && req.Header.Get("Tus-Resumable") == "" {
 		req.Header.Set("Tus-Resumable", c.ProtocolVersion)
 	}
 	if c.ctx != nil {
@@ -148,7 +169,7 @@ func (c *Client) ensureExtension(extension string) error {
 func (c *Client) maybeUpdateCapabilities() (err error) {
 	var response *http.Response
 	if c.capabilities == nil {
-		if c.capabilities, response, err = c.GetCapabilities(); err != nil {
+		if response, err = c.UpdateCapabilities(); err != nil {
 			return
 		}
 		if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
@@ -169,4 +190,8 @@ func EncodeMetadata(metadata map[string]string) (string, error) {
 	}
 
 	return strings.Join(encoded, ","), nil
+}
+
+func newRequest(method, url string, body io.Reader, tusClient *Client, _ *http.Client, _ *ServerCapabilities) (*http.Request, error) {
+	return http.NewRequest(method, url, body)
 }
