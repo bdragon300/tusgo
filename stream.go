@@ -103,7 +103,7 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (us *UploadStream) GetRemoteOffset() (remoteOffset int64, response *http.Response, err error) {
+func (us *UploadStream) Sync() (remoteOffset int64, response *http.Response, err error) {
 	us.readBuffer.Truncate(0)
 	remoteOffset = -1
 	var req *http.Request
@@ -123,6 +123,7 @@ func (us *UploadStream) GetRemoteOffset() (remoteOffset int64, response *http.Re
 		if remoteOffset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			return
 		}
+		us.remoteOffset = remoteOffset
 	}
 	return
 }
