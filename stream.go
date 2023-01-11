@@ -50,14 +50,15 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 			return
 		}
 
-		select {
-		case <-us.client.ctx.Done():
-			return us.remoteOffset, context.Canceled
-		default:
+		if us.client.ctx != nil {
+			select {
+			case <-us.client.ctx.Done():
+				return us.remoteOffset, context.Canceled
+			default:
+			}
 		}
 
-		// Finish reading the intermediate buffer if the previous read has failed
-		if us.readBuffer.Len() == 0 {
+		if !us.Dirty() {
 			bytesRead, copyErr = io.CopyN(us.readBuffer, r, copySize)
 			n += bytesRead
 			if copyErr != nil && copyErr != io.EOF {
@@ -65,19 +66,19 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 				err = copyErr
 				return
 			}
+			if bytesRead == 0 {
+				return
+			}
 		}
 		if _, remoteOffset, us.LastResponse, err = us.UploadChunk(us.readBuffer); err != nil {
 			return
-		} else if us.LastResponse.StatusCode >= 300 {
-			err = fmt.Errorf("server returned HTTP %d code, %d bytes were not uploaded", us.LastResponse.StatusCode, bytesRead)
-			return
 		}
-		us.readBuffer.Truncate(0)
 		if remoteOffset <= us.remoteOffset {
-			err = fmt.Errorf("server returned bad next offset: %d, previous offset was %d", remoteOffset, us.remoteOffset)
+			err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.remoteOffset, remoteOffset, ErrProtocol)
 			return
 		}
 		us.remoteOffset = remoteOffset
+		us.readBuffer.Truncate(0)
 	}
 	err = copyErr
 	return
@@ -103,29 +104,36 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (us *UploadStream) Sync() (remoteOffset int64, response *http.Response, err error) {
+func (us *UploadStream) Sync() error {
 	us.readBuffer.Truncate(0)
-	remoteOffset = -1
-	var req *http.Request
-	var loc *url.URL
-	if loc, err = url.Parse(us.file.Location); err != nil {
-		return
+	loc, err := url.Parse(us.file.Location)
+	if err != nil {
+		return err
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
-	if req, err = us.client.GetRequest(http.MethodHead, u, nil, us.client, us.client.client, us.client.capabilities); err != nil {
-		return
+	req, err := us.client.GetRequest(http.MethodHead, u, nil, us.client, us.client.client, us.client.capabilities)
+	if err != nil {
+		return err
+	}
+	if us.client.ctx != nil {
+		req = req.WithContext(us.client.ctx)
 	}
 
-	if response, err = us.client.client.Do(req.WithContext(us.client.ctx)); err != nil {
-		return
+	if us.LastResponse, err = us.client.client.Do(req); err != nil {
+		return err
 	}
-	if response.StatusCode < 300 {
-		if remoteOffset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
-			return
+	if us.LastResponse.StatusCode >= 300 {
+		switch us.LastResponse.StatusCode {
+		case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+			return ErrFileDoesNotExist
+		default:
+			return ErrUnknown
 		}
-		us.remoteOffset = remoteOffset
 	}
-	return
+	if us.remoteOffset, err = strconv.ParseInt(us.LastResponse.Header.Get("Upload-Offset"), 10, 64); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remoteOffset int64, response *http.Response, err error) {
@@ -158,6 +166,9 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	if req, err = us.client.GetRequest(http.MethodPatch, u, data, us.client, us.client.client, us.client.capabilities); err != nil {
 		return
 	}
+	if us.client.ctx != nil {
+		req = req.WithContext(us.client.ctx)
+	}
 
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
 	req.Header.Set("Content-Length", strconv.FormatInt(copySize, 10))
@@ -167,20 +178,24 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 300 {
-		bytesUploaded = int(copySize)
-	}
 
-	if response.StatusCode == http.StatusNoContent {
+	switch response.StatusCode {
+	case http.StatusNoContent:
+		bytesUploaded = int(copySize)
 		if remoteOffset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			return
 		}
-		if remoteOffset <= us.remoteOffset {
-			err = fmt.Errorf("server returned bad next offset: %d, previous offset was %d", remoteOffset, us.remoteOffset)
-			return
+		err = copyErr
+	case http.StatusConflict:
+		err = ErrOffsetsNotSynced
+	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+		err = ErrFileDoesNotExist
+	default:
+		err = ErrUnknown
+		if response.StatusCode < 300 {
+			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
 	}
-	err = copyErr
 	return
 }
 
@@ -213,4 +228,8 @@ func (us *UploadStream) Tell() int64 {
 
 func (us *UploadStream) Len() int64 {
 	return us.file.RemoteSize
+}
+
+func (us *UploadStream) Dirty() bool {
+	return us.readBuffer.Len() > 0
 }

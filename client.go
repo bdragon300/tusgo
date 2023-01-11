@@ -112,24 +112,30 @@ func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusOK {
-		return
-	}
 
-	c.capabilities = &ServerCapabilities{}
-	if v := response.Header.Get("Tus-Max-Size"); v != "" {
-		if c.capabilities.MaxSize, err = strconv.ParseInt(v, 10, 64); err != nil {
-			err = fmt.Errorf("cannot parse Tus-Max-Size integer value: %w", err)
-			return
+	switch response.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		c.capabilities = &ServerCapabilities{}
+		if v := response.Header.Get("Tus-Max-Size"); v != "" {
+			if c.capabilities.MaxSize, err = strconv.ParseInt(v, 10, 64); err != nil {
+				err = fmt.Errorf("cannot parse Tus-Max-Size integer value %q: %w", v, ErrProtocol)
+				return
+			}
+		}
+		if v := response.Header.Get("Tus-Extension"); v != "" {
+			c.capabilities.Extensions = strings.Split(v, ",")
+		}
+		if v := response.Header.Get("Tus-Version"); v != "" {
+			c.capabilities.ProtocolVersions = strings.Split(v, ",")
+		}
+	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+		err = ErrFileDoesNotExist
+	default:
+		err = ErrUnknown
+		if response.StatusCode < 300 {
+			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
 	}
-	if v := response.Header.Get("Tus-Extension"); v != "" {
-		c.capabilities.Extensions = strings.Split(v, ",")
-	}
-	if v := response.Header.Get("Tus-Version"); v != "" {
-		c.capabilities.ProtocolVersions = strings.Split(v, ",")
-	}
-
 	return
 }
 
@@ -147,9 +153,12 @@ func (c *Client) tusRequest(req *http.Request) (response *http.Response, err err
 	response, err = c.client.Do(req)
 	if response.StatusCode == http.StatusPreconditionFailed {
 		versions := response.Header.Get("Tus-Version")
-		err = fmt.Errorf("server does not support version %s, supported versions: %s", c.ProtocolVersion, versions)
+		err = fmt.Errorf("request protocol version %s, server supported versions: %s: %w", c.ProtocolVersion, versions, ErrProtocol)
 	} else if v := response.Header.Get("Tus-Resumable"); v != c.ProtocolVersion {
-		err = fmt.Errorf("server unexpectedly responded Tus protocol version %s, but we requested version %s", v, c.ProtocolVersion)
+		err = fmt.Errorf(
+			"server response protocol version %s, requested version %s: %w",
+			v, c.ProtocolVersion, ErrProtocol,
+		)
 	}
 	return
 }
@@ -163,7 +172,7 @@ func (c *Client) ensureExtension(extension string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("server does not support %q extension", extension)
+	return fmt.Errorf("server extension %q is required: %w", extension, ErrUnsupportedOperation)
 }
 
 func (c *Client) maybeUpdateCapabilities() (err error) {
