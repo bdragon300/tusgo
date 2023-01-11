@@ -18,6 +18,7 @@ func NewUploadStream(client *Client, file File) *UploadStream {
 		client:       client,
 		remoteOffset: 0,
 		readBuffer:   bytes.NewBuffer(make([]byte, 0)),
+		uploadMethod: http.MethodPatch,
 	}
 }
 
@@ -30,6 +31,7 @@ type UploadStream struct {
 	client       *Client
 	remoteOffset int64
 	readBuffer   *bytes.Buffer
+	uploadMethod string
 }
 
 func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
@@ -173,7 +175,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	u := us.client.BaseURL.ResolveReference(loc).String()
 
 	var req *http.Request
-	if req, err = us.client.GetRequest(http.MethodPatch, u, data, us.client, us.client.client, us.client.capabilities); err != nil {
+	if req, err = us.client.GetRequest(us.uploadMethod, u, data, us.client, us.client.client, us.client.capabilities); err != nil {
 		return
 	}
 	if us.client.ctx != nil {

@@ -12,15 +12,16 @@ import (
 )
 
 func NewClient(client *http.Client, baseURL *url.URL) *Client {
-	c := &Client{}
+	c := &Client{
+		ProtocolVersion: "1.0.0",
+		GetRequest:      newRequest,
+	}
 	if client == nil {
 		c.client = http.DefaultClient
 	}
 	if baseURL == nil {
 		c.BaseURL, _ = url.Parse("http://example.com/files")
 	}
-	c.ProtocolVersion = "1.0.0"
-	c.GetRequest = newRequest
 	return c
 }
 
@@ -93,6 +94,24 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 		}
 	}
 
+	return
+}
+
+func (c *Client) CreateFileWithData(stream *UploadStream, data []byte) (uploadedBytes int, err error) {
+	if stream == nil {
+		panic("stream is nil")
+	}
+	if err = c.ensureExtension("creation-with-upload"); err != nil {
+		return
+	}
+	prevStream := *stream
+	stream.ChunkSize = int64(len(data)) // Data can be uploaded in one request
+	stream.uploadMethod = http.MethodPost
+
+	uploadedBytes, err = stream.Write(data)
+
+	stream.ChunkSize = prevStream.ChunkSize
+	stream.uploadMethod = prevStream.uploadMethod
 	return
 }
 
