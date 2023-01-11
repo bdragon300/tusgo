@@ -14,8 +14,8 @@ func NewUploadStream(client *Client, file File) *UploadStream {
 	return &UploadStream{
 		ChunkSize:    2 * 1024 * 1024,
 		LastResponse: nil,
+		File:         file,
 		client:       client,
-		file:         file,
 		remoteOffset: 0,
 		readBuffer:   bytes.NewBuffer(make([]byte, 0)),
 	}
@@ -24,9 +24,10 @@ func NewUploadStream(client *Client, file File) *UploadStream {
 type UploadStream struct {
 	ChunkSize    int64
 	LastResponse *http.Response
+	SetFileSize  bool
+	File         File
 
 	client       *Client
-	file         File
 	remoteOffset int64
 	readBuffer   *bytes.Buffer
 }
@@ -39,12 +40,15 @@ func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
 func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 	var copyErr error
 	var bytesRead int64
+	if err = us.validate(); err != nil {
+		return
+	}
 	remoteOffset := us.remoteOffset
 
 	for copyErr != io.EOF {
 		copySize := us.ChunkSize
-		if remoteOffset+copySize > us.file.RemoteSize {
-			copySize = us.file.RemoteSize - remoteOffset
+		if remoteOffset+copySize > us.File.RemoteSize {
+			copySize = us.File.RemoteSize - remoteOffset
 		}
 		if copySize == 0 {
 			return
@@ -85,6 +89,9 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 func (us *UploadStream) Write(p []byte) (n int, err error) {
+	if err = us.validate(); err != nil {
+		return
+	}
 	us.readBuffer.Truncate(0)
 	bytesUploaded := 1
 	buf := bytes.NewBuffer(p)
@@ -106,7 +113,7 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 
 func (us *UploadStream) Sync() error {
 	us.readBuffer.Truncate(0)
-	loc, err := url.Parse(us.file.Location)
+	loc, err := url.Parse(us.File.Location)
 	if err != nil {
 		return err
 	}
@@ -140,8 +147,11 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	var copyErr error
 	remoteOffset = us.remoteOffset
 	copySize := us.ChunkSize
-	remoteBytesLeft := us.file.RemoteSize - remoteOffset
+	remoteBytesLeft := us.File.RemoteSize - remoteOffset
 
+	if err = us.validate(); err != nil {
+		return
+	}
 	if copySize > remoteBytesLeft {
 		copySize = remoteBytesLeft
 	}
@@ -157,7 +167,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	data := io.LimitReader(buf, copySize)
 
 	var loc *url.URL
-	if loc, err = url.Parse(us.file.Location); err != nil {
+	if loc, err = url.Parse(us.File.Location); err != nil {
 		return
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
@@ -173,6 +183,12 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
 	req.Header.Set("Content-Length", strconv.FormatInt(copySize, 10))
 	req.Header.Set("Upload-Offset", strconv.FormatInt(remoteOffset, 10))
+	if us.SetFileSize && remoteOffset == 0 {
+		if err = us.client.ensureExtension("creation-defer-length"); err != nil {
+			return
+		}
+		req.Header.Set("Upload-Length", strconv.FormatInt(us.File.RemoteSize, 10))
+	}
 
 	if response, err = us.client.tusRequest(req); err != nil {
 		return
@@ -208,12 +224,12 @@ func (us *UploadStream) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekCurrent:
 		newOffset = us.remoteOffset + offset
 	case io.SeekEnd:
-		newOffset = us.file.RemoteSize - 1 + offset
+		newOffset = us.File.RemoteSize - 1 + offset
 	default:
 		panic("unknown whence value")
 	}
-	if offset >= us.file.RemoteSize {
-		return newOffset, fmt.Errorf("offset %d exceeds the file size %d bytes", newOffset, us.file.RemoteSize)
+	if offset >= us.File.RemoteSize {
+		return newOffset, fmt.Errorf("offset %d exceeds the file size %d bytes", newOffset, us.File.RemoteSize)
 	}
 	if offset < 0 {
 		return newOffset, fmt.Errorf("offset %d is negative", newOffset)
@@ -227,9 +243,24 @@ func (us *UploadStream) Tell() int64 {
 }
 
 func (us *UploadStream) Len() int64 {
-	return us.file.RemoteSize
+	return us.File.RemoteSize
 }
 
 func (us *UploadStream) Dirty() bool {
 	return us.readBuffer.Len() > 0
+}
+
+func (us *UploadStream) validate() error {
+	if us.File.RemoteSize == FileSizeUnknown {
+		panic("file with unknown size")
+	}
+	if us.File.RemoteSize < 0 {
+		panic(fmt.Sprintf("file size is negative %d", us.File.RemoteSize))
+	}
+	if us.SetFileSize {
+		if err := us.client.ensureExtension("creation-defer-length"); err != nil {
+			return err
+		}
+	}
+	return nil
 }

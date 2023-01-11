@@ -61,7 +61,15 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	}
 
 	req.Header.Set("Content-Length", strconv.FormatInt(0, 10))
-	req.Header.Set("Upload-Length", strconv.FormatInt(f.RemoteSize, 10))
+	switch {
+	case f.RemoteSize == FileSizeUnknown:
+		req.Header.Set("Upload-Defer-Length", "1")
+	case f.RemoteSize > 0:
+		req.Header.Set("Upload-Length", strconv.FormatInt(f.RemoteSize, 10))
+	default:
+		panic(fmt.Sprintf("file size is negative: %d", f.RemoteSize))
+	}
+
 	var meta string
 	if meta, err = EncodeMetadata(f.Metadata); err != nil {
 		return
@@ -72,8 +80,17 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusCreated {
+
+	switch response.StatusCode {
+	case http.StatusCreated:
 		f.Location = response.Header.Get("Location")
+	case http.StatusRequestEntityTooLarge:
+		err = ErrFileTooLarge
+	default:
+		err = ErrUnknown
+		if response.StatusCode < 300 {
+			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
+		}
 	}
 
 	return
