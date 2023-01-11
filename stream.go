@@ -8,9 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
-func NewUploadStream(client *Client, file File) *UploadStream {
+func NewUploadStream(client *Client, file *File) *UploadStream {
+	if file == nil {
+		panic("file is nil")
+	}
 	return &UploadStream{
 		ChunkSize:    2 * 1024 * 1024,
 		LastResponse: nil,
@@ -26,10 +30,10 @@ type UploadStream struct {
 	ChunkSize    int64
 	LastResponse *http.Response
 	SetFileSize  bool
-	File         File
+	File         *File
 
 	client       *Client
-	remoteOffset int64
+	remoteOffset int64 // TODO: Move this to CLient
 	readBuffer   *bytes.Buffer
 	uploadMethod string
 }
@@ -202,6 +206,13 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 		bytesUploaded = int(copySize)
 		if remoteOffset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			return
+		}
+		if v := response.Header.Get("Upload-Expires"); v != "" {
+			var t time.Time
+			if t, err = time.Parse(time.RFC1123, v); err != nil {
+				return
+			}
+			us.File.Expired = &t
 		}
 		err = copyErr
 	case http.StatusConflict:
