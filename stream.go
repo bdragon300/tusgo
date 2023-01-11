@@ -18,9 +18,8 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 	return &UploadStream{
 		ChunkSize:    2 * 1024 * 1024,
 		LastResponse: nil,
-		File:         file,
+		file:         file,
 		client:       client,
-		remoteOffset: 0,
 		readBuffer:   bytes.NewBuffer(make([]byte, 0)),
 		uploadMethod: http.MethodPatch,
 	}
@@ -30,10 +29,9 @@ type UploadStream struct {
 	ChunkSize    int64
 	LastResponse *http.Response
 	SetFileSize  bool
-	File         *File
 
+	file         *File
 	client       *Client
-	remoteOffset int64 // TODO: Move this to CLient
 	readBuffer   *bytes.Buffer
 	uploadMethod string
 }
@@ -49,12 +47,12 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 	if err = us.validate(); err != nil {
 		return
 	}
-	remoteOffset := us.remoteOffset
+	remoteOffset := us.file.RemoteOffset
 
 	for copyErr != io.EOF {
 		copySize := us.ChunkSize
-		if remoteOffset+copySize > us.File.RemoteSize {
-			copySize = us.File.RemoteSize - remoteOffset
+		if remoteOffset+copySize > us.file.RemoteSize {
+			copySize = us.file.RemoteSize - remoteOffset
 		}
 		if copySize == 0 {
 			return
@@ -63,7 +61,8 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 		if us.client.ctx != nil {
 			select {
 			case <-us.client.ctx.Done():
-				return us.remoteOffset, context.Canceled
+				err = context.Canceled
+				return
 			default:
 			}
 		}
@@ -83,11 +82,11 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 		if _, remoteOffset, us.LastResponse, err = us.UploadChunk(us.readBuffer); err != nil {
 			return
 		}
-		if remoteOffset <= us.remoteOffset {
-			err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.remoteOffset, remoteOffset, ErrProtocol)
+		if remoteOffset <= us.file.RemoteOffset {
+			err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.file.RemoteOffset, remoteOffset, ErrProtocol)
 			return
 		}
-		us.remoteOffset = remoteOffset
+		us.file.RemoteOffset = remoteOffset
 		us.readBuffer.Truncate(0)
 	}
 	err = copyErr
@@ -112,14 +111,14 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 			err = fmt.Errorf("server returned HTTP %d code", us.LastResponse.StatusCode)
 			return
 		}
-		us.remoteOffset = remoteOffset
+		us.file.RemoteOffset = remoteOffset
 	}
 	return
 }
 
 func (us *UploadStream) Sync() error {
 	us.readBuffer.Truncate(0)
-	loc, err := url.Parse(us.File.Location)
+	loc, err := url.Parse(us.file.Location)
 	if err != nil {
 		return err
 	}
@@ -143,7 +142,7 @@ func (us *UploadStream) Sync() error {
 			return ErrUnknown
 		}
 	}
-	if us.remoteOffset, err = strconv.ParseInt(us.LastResponse.Header.Get("Upload-Offset"), 10, 64); err != nil {
+	if us.file.RemoteOffset, err = strconv.ParseInt(us.LastResponse.Header.Get("Upload-Offset"), 10, 64); err != nil {
 		return err
 	}
 	return nil
@@ -151,9 +150,9 @@ func (us *UploadStream) Sync() error {
 
 func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remoteOffset int64, response *http.Response, err error) {
 	var copyErr error
-	remoteOffset = us.remoteOffset
+	remoteOffset = us.file.RemoteOffset
 	copySize := us.ChunkSize
-	remoteBytesLeft := us.File.RemoteSize - remoteOffset
+	remoteBytesLeft := us.file.RemoteSize - remoteOffset
 
 	if err = us.validate(); err != nil {
 		return
@@ -173,7 +172,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	data := io.LimitReader(buf, copySize)
 
 	var loc *url.URL
-	if loc, err = url.Parse(us.File.Location); err != nil {
+	if loc, err = url.Parse(us.file.Location); err != nil {
 		return
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
@@ -193,7 +192,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 		if err = us.client.ensureExtension("creation-defer-length"); err != nil {
 			return
 		}
-		req.Header.Set("Upload-Length", strconv.FormatInt(us.File.RemoteSize, 10))
+		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
 	}
 
 	if response, err = us.client.tusRequest(req); err != nil {
@@ -212,7 +211,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 			if t, err = time.Parse(time.RFC1123, v); err != nil {
 				return
 			}
-			us.File.Expired = &t
+			us.file.Expired = &t
 		}
 		err = copyErr
 	case http.StatusConflict:
@@ -235,28 +234,28 @@ func (us *UploadStream) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekStart:
 		newOffset = offset
 	case io.SeekCurrent:
-		newOffset = us.remoteOffset + offset
+		newOffset = us.file.RemoteOffset + offset
 	case io.SeekEnd:
-		newOffset = us.File.RemoteSize - 1 + offset
+		newOffset = us.file.RemoteSize - 1 + offset
 	default:
 		panic("unknown whence value")
 	}
-	if offset >= us.File.RemoteSize {
-		return newOffset, fmt.Errorf("offset %d exceeds the file size %d bytes", newOffset, us.File.RemoteSize)
+	if offset >= us.file.RemoteSize {
+		return newOffset, fmt.Errorf("offset %d exceeds the file size %d bytes", newOffset, us.file.RemoteSize)
 	}
 	if offset < 0 {
 		return newOffset, fmt.Errorf("offset %d is negative", newOffset)
 	}
-	us.remoteOffset = newOffset
+	us.file.RemoteOffset = newOffset
 	return newOffset, nil
 }
 
 func (us *UploadStream) Tell() int64 {
-	return us.remoteOffset
+	return us.file.RemoteOffset
 }
 
 func (us *UploadStream) Len() int64 {
-	return us.File.RemoteSize
+	return us.file.RemoteSize
 }
 
 func (us *UploadStream) Dirty() bool {
@@ -264,11 +263,11 @@ func (us *UploadStream) Dirty() bool {
 }
 
 func (us *UploadStream) validate() error {
-	if us.File.RemoteSize == FileSizeUnknown {
+	if us.file.RemoteSize == FileSizeUnknown {
 		panic("file with unknown size")
 	}
-	if us.File.RemoteSize < 0 {
-		panic(fmt.Sprintf("file size is negative %d", us.File.RemoteSize))
+	if us.file.RemoteSize < 0 {
+		panic(fmt.Sprintf("file size is negative %d", us.file.RemoteSize))
 	}
 	if us.SetFileSize {
 		if err := us.client.ensureExtension("creation-defer-length"); err != nil {
