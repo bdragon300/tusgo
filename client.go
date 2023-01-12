@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/bdragon300/tusgo/checksum"
 )
 
 func NewClient(client *http.Client, baseURL *url.URL) *Client {
@@ -163,6 +165,14 @@ func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 		}
 		if v := response.Header.Get("Tus-Version"); v != "" {
 			c.capabilities.ProtocolVersions = strings.Split(v, ",")
+		}
+		if v := response.Header.Get("Tus-Checksum-Algorithm"); v != "" {
+			names := strings.Split(v, ",")
+			for _, n := range names {
+				if algo, ok := checksum.GetAlgorithm(n); ok {
+					c.capabilities.ChecksumAlgorithms = append(c.capabilities.ChecksumAlgorithms, algo)
+				}
+			}
 		}
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist

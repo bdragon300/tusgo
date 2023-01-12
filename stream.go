@@ -3,12 +3,16 @@ package tusgo
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/bdragon300/tusgo/checksum"
 )
 
 func NewUploadStream(client *Client, file *File) *UploadStream {
@@ -17,7 +21,6 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 	}
 	return &UploadStream{
 		ChunkSize:    2 * 1024 * 1024,
-		LastResponse: nil,
 		file:         file,
 		client:       client,
 		readBuffer:   bytes.NewBuffer(make([]byte, 0)),
@@ -30,14 +33,23 @@ type UploadStream struct {
 	LastResponse *http.Response
 	SetFileSize  bool
 
-	file         *File
-	client       *Client
-	readBuffer   *bytes.Buffer
-	uploadMethod string
+	checksumHash     hash.Hash
+	checksumHashName checksum.Algorithm
+	file             *File
+	client           *Client
+	readBuffer       *bytes.Buffer
+	uploadMethod     string
 }
 
 func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
-	us.client.ctx = ctx
+	us.client.ctx = ctx // FIXME: copy object
+	return us
+}
+
+func (us *UploadStream) WithChecksumAlgorithm(name checksum.Algorithm) *UploadStream {
+	f := checksum.Algorithms[name] // Get algorithm by name from list of known algorithms
+	us.checksumHash = f()          // FIXME: copy object
+	us.checksumHashName = name
 	return us
 }
 
@@ -67,7 +79,7 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 			}
 		}
 
-		if !us.Dirty() {
+		if !us.Dirty() { // TODO: flag to read directly from r (unsafe). (Because this is too much memory may be consumed on much data and Chunksize == len of data)
 			bytesRead, copyErr = io.CopyN(us.readBuffer, r, copySize)
 			n += bytesRead
 			if copyErr != nil && copyErr != io.EOF {
@@ -170,6 +182,13 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 		return
 	}
 	data := io.LimitReader(buf, copySize)
+	if us.checksumHash != nil {
+		if err = us.client.ensureExtension("checksum"); err != nil {
+			return
+		}
+		us.checksumHash.Reset()
+		data = io.TeeReader(data, us.checksumHash)
+	}
 
 	var loc *url.URL
 	if loc, err = url.Parse(us.file.Location); err != nil {
@@ -193,6 +212,11 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 			return
 		}
 		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
+	}
+	if us.checksumHash != nil {
+		sum := make([]byte, 0)
+		us.checksumHash.Sum(sum)
+		req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.checksumHashName, base64.StdEncoding.EncodeToString(sum)))
 	}
 
 	if response, err = us.client.tusRequest(req); err != nil {
@@ -218,6 +242,12 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 		err = ErrOffsetsNotSynced
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist
+	case 460: // Non-standard HTTP code '460 Checksum Mismatch'
+		if us.checksumHash != nil {
+			err = ErrChecksumMismatch
+			return
+		}
+		fallthrough
 	default:
 		err = ErrUnknown
 		if response.StatusCode < 300 {
