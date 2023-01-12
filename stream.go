@@ -211,7 +211,7 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 			if t, err = time.Parse(time.RFC1123, v); err != nil {
 				return
 			}
-			us.file.Expired = &t
+			us.file.UploadExpired = &t
 		}
 		err = copyErr
 	case http.StatusConflict:
