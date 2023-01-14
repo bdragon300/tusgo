@@ -19,12 +19,12 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 	if file == nil {
 		panic("file is nil")
 	}
+	const chunkSize = 2 * 1024 * 1024
 	return &UploadStream{
-		ChunkSize:    2 * 1024 * 1024,
+		ChunkSize:    chunkSize,
 		file:         file,
 		client:       client,
-		readBuffer:   bytes.NewBuffer(make([]byte, 0)),
-		uploadMethod: http.MethodPatch,
+		uploadMethod: http.MethodPatch, // TODO: method override header
 	}
 }
 
@@ -37,7 +37,7 @@ type UploadStream struct {
 	checksumHashName checksum.Algorithm
 	file             *File
 	client           *Client
-	readBuffer       *bytes.Buffer
+	dirtyBuffer      []byte
 	uploadMethod     string
 }
 
@@ -54,54 +54,29 @@ func (us *UploadStream) WithChecksumAlgorithm(name checksum.Algorithm) *UploadSt
 }
 
 func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
-	var copyErr error
-	var bytesRead int64
 	if err = us.validate(); err != nil {
 		return
 	}
-	remoteOffset := us.file.RemoteOffset
+	uploaded := us.ChunkSize
 
-	for copyErr != io.EOF {
-		copySize := us.ChunkSize
-		if remoteOffset+copySize > us.file.RemoteSize {
-			copySize = us.file.RemoteSize - remoteOffset
-		}
-		if copySize == 0 {
+	if us.dirtyBuffer != nil {
+		if _, err = us.uploadWithDirtyBuffer(bytes.NewReader(us.dirtyBuffer)); err != nil {
 			return
 		}
-
-		if us.client.ctx != nil {
-			select {
-			case <-us.client.ctx.Done():
-				err = context.Canceled
-				return
-			default:
-			}
+		if us.ChunkSize == -1 || int64(len(us.dirtyBuffer)) != us.ChunkSize {
+			us.dirtyBuffer = nil
 		}
-
-		if !us.Dirty() { // TODO: flag to read directly from r (unsafe). (Because this is too much memory may be consumed on much data and Chunksize == len of data)
-			bytesRead, copyErr = io.CopyN(us.readBuffer, r, copySize)
-			n += bytesRead
-			if copyErr != nil && copyErr != io.EOF {
-				us.readBuffer.Truncate(0)
-				err = copyErr
-				return
-			}
-			if bytesRead == 0 {
-				return
-			}
-		}
-		if _, remoteOffset, us.LastResponse, err = us.UploadChunk(us.readBuffer); err != nil {
-			return
-		}
-		if remoteOffset <= us.file.RemoteOffset {
-			err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.file.RemoteOffset, remoteOffset, ErrProtocol)
-			return
-		}
-		us.file.RemoteOffset = remoteOffset
-		us.readBuffer.Truncate(0)
 	}
-	err = copyErr
+	if us.ChunkSize != -1 && us.dirtyBuffer == nil {
+		us.dirtyBuffer = make([]byte, us.ChunkSize)
+	}
+
+	for uploaded == us.ChunkSize {
+		if uploaded, err = us.uploadWithDirtyBuffer(r); err != nil {
+			return
+		}
+	}
+	us.dirtyBuffer = nil // Mark stream as clean if the whole data has been uploaded successfully
 	return
 }
 
@@ -109,27 +84,26 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	if err = us.validate(); err != nil {
 		return
 	}
-	us.readBuffer.Truncate(0)
-	bytesUploaded := 1
-	buf := bytes.NewBuffer(p)
-	var remoteOffset int64
+	if us.ChunkSize > 0 {
+		us.dirtyBuffer = make([]byte, us.ChunkSize)
+		defer func() { us.dirtyBuffer = nil }() // Always mark stream as clean, since p is seekable
+	}
+	uploaded := us.ChunkSize
+	var rd io.Reader = bytes.NewReader(p)
 
-	for buf.Len() > 0 && bytesUploaded > 0 {
-		bytesUploaded, remoteOffset, us.LastResponse, err = us.UploadChunk(buf)
-		n += bytesUploaded
-		if err != nil {
-			return
-		} else if us.LastResponse.StatusCode >= 300 {
-			err = fmt.Errorf("server returned HTTP %d code", us.LastResponse.StatusCode)
+	for uploaded == us.ChunkSize {
+		if us.ChunkSize != -1 {
+			rd = io.LimitReader(rd, us.ChunkSize)
+		}
+		if uploaded, err = us.uploadWithDirtyBuffer(rd); err != nil {
 			return
 		}
-		us.file.RemoteOffset = remoteOffset
+		n += int(uploaded)
 	}
 	return
 }
 
 func (us *UploadStream) Sync() error {
-	us.readBuffer.Truncate(0)
 	loc, err := url.Parse(us.file.Location)
 	if err != nil {
 		return err
@@ -160,34 +134,22 @@ func (us *UploadStream) Sync() error {
 	return nil
 }
 
-func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remoteOffset int64, response *http.Response, err error) {
-	var copyErr error
-	remoteOffset = us.file.RemoteOffset
-	copySize := us.ChunkSize
-	remoteBytesLeft := us.file.RemoteSize - remoteOffset
-
+func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64, offset int64, response *http.Response, err error) {
 	if err = us.validate(); err != nil {
 		return
 	}
-	if copySize > remoteBytesLeft {
-		copySize = remoteBytesLeft
+	offset = us.file.RemoteOffset
+	bytesToUpload := int64(-1)
+	if buf != nil {
+		bytesToUpload = int64(len(buf))
 	}
-	if copySize > int64(buf.Len()) {
-		copySize = int64(buf.Len())
+
+	remoteBytesLeft := us.file.RemoteSize - offset
+	if bytesToUpload > remoteBytesLeft {
+		bytesToUpload = remoteBytesLeft
 	}
-	if remoteBytesLeft <= us.ChunkSize && remoteBytesLeft < int64(buf.Len()) {
-		copyErr = io.ErrShortWrite // We've reached the file end, but buffer contains more data
-	}
-	if copySize == 0 {
+	if bytesToUpload == 0 {
 		return
-	}
-	data := io.LimitReader(buf, copySize)
-	if us.checksumHash != nil {
-		if err = us.client.ensureExtension("checksum"); err != nil {
-			return
-		}
-		us.checksumHash.Reset()
-		data = io.TeeReader(data, us.checksumHash)
 	}
 
 	var loc *url.URL
@@ -197,28 +159,59 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 	u := us.client.BaseURL.ResolveReference(loc).String()
 
 	var req *http.Request
-	if req, err = us.client.GetRequest(us.uploadMethod, u, data, us.client, us.client.client, us.client.capabilities); err != nil {
+	if req, err = us.client.GetRequest(us.uploadMethod, u, nil, us.client, us.client.client, us.client.capabilities); err != nil {
 		return
 	}
-	if us.client.ctx != nil {
-		req = req.WithContext(us.client.ctx)
+
+	if buf != nil {
+		t, e := io.ReadAtLeast(data, buf, int(bytesToUpload))
+		switch e {
+		case io.ErrUnexpectedEOF:
+			bytesToUpload = int64(t) // Reader has ended early
+		case io.EOF:
+			return // Reader is empty
+		default:
+			if e != nil {
+				err = e
+				return
+			}
+		}
+		data = bytes.NewReader(buf[:bytesToUpload])
 	}
 
+	if us.checksumHash != nil {
+		if err = us.client.ensureExtension("checksum"); err != nil {
+			return
+		}
+		us.checksumHash.Reset()
+
+		if buf != nil {
+			sumBuf := make([]byte, 0)
+			us.checksumHash.Sum(sumBuf)
+			req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.checksumHashName, base64.StdEncoding.EncodeToString(sumBuf)))
+		} else {
+			if err = us.client.ensureExtension("checksum-trailer"); err != nil {
+				return
+			}
+			trailers := map[string]io.Reader{"Upload-Checksum": checksum.HashReader{us.checksumHash}}
+			data = checksum.NewTrailerReader(io.TeeReader(data, us.checksumHash), trailers, req)
+		}
+	}
+	req.Body = io.NopCloser(data)
+	req.Header.Set("Content-Length", strconv.FormatInt(bytesToUpload, 10))
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
-	req.Header.Set("Content-Length", strconv.FormatInt(copySize, 10))
-	req.Header.Set("Upload-Offset", strconv.FormatInt(remoteOffset, 10))
-	if us.SetFileSize && remoteOffset == 0 {
+	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
+
+	if us.SetFileSize && offset == 0 {
 		if err = us.client.ensureExtension("creation-defer-length"); err != nil {
 			return
 		}
 		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
 	}
-	if us.checksumHash != nil {
-		sum := make([]byte, 0)
-		us.checksumHash.Sum(sum)
-		req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.checksumHashName, base64.StdEncoding.EncodeToString(sum)))
-	}
 
+	if us.client.ctx != nil {
+		req = req.WithContext(us.client.ctx)
+	}
 	if response, err = us.client.tusRequest(req); err != nil {
 		return
 	}
@@ -226,8 +219,8 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 
 	switch response.StatusCode {
 	case http.StatusNoContent:
-		bytesUploaded = int(copySize)
-		if remoteOffset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
+		bytesUploaded = bytesToUpload
+		if offset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			return
 		}
 		if v := response.Header.Get("Upload-Expires"); v != "" {
@@ -237,11 +230,12 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 			}
 			us.file.UploadExpired = &t
 		}
-		err = copyErr
 	case http.StatusConflict:
 		err = ErrOffsetsNotSynced
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist
+	case http.StatusRequestEntityTooLarge:
+		err = ErrFileTooLarge
 	case 460: // Non-standard HTTP code '460 Checksum Mismatch'
 		if us.checksumHash != nil {
 			err = ErrChecksumMismatch
@@ -258,7 +252,6 @@ func (us *UploadStream) UploadChunk(buf *bytes.Buffer) (bytesUploaded int, remot
 }
 
 func (us *UploadStream) Seek(offset int64, whence int) (int64, error) {
-	us.readBuffer.Truncate(0)
 	var newOffset int64
 	switch whence {
 	case io.SeekStart:
@@ -289,7 +282,11 @@ func (us *UploadStream) Len() int64 {
 }
 
 func (us *UploadStream) Dirty() bool {
-	return us.readBuffer.Len() > 0
+	return us.dirtyBuffer != nil
+}
+
+func (us *UploadStream) Reset() {
+	us.dirtyBuffer = nil
 }
 
 func (us *UploadStream) validate() error {
@@ -304,5 +301,21 @@ func (us *UploadStream) validate() error {
 			return err
 		}
 	}
+	if us.ChunkSize <= 0 && us.ChunkSize != -1 {
+		panic("ChunkSize must be either a positive number or -1")
+	}
 	return nil
+}
+
+func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err error) {
+	var offset int64
+	if _, offset, us.LastResponse, err = us.Upload(r, us.dirtyBuffer); err != nil {
+		return
+	}
+	if offset <= us.file.RemoteOffset {
+		err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.file.RemoteOffset, offset, ErrProtocol)
+		return
+	}
+	us.file.RemoteOffset = offset
+	return
 }

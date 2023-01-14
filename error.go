@@ -2,6 +2,7 @@ package tusgo
 
 import "errors"
 
+// TODO: mark some errors below as temporary, some as persistent
 var (
 	ErrProtocol             = errors.New("tus protocol error")
 	ErrUnsupportedOperation = errors.New("unsupported operation")
