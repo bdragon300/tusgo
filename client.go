@@ -138,6 +138,18 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 		return
 	}
 	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusNoContent:
+	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+		err = ErrFileDoesNotExist
+	default:
+		err = ErrUnknown
+		if response.StatusCode < 300 {
+			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
+		}
+	}
+
 	return
 }
 
