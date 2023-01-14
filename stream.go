@@ -188,9 +188,6 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	}
 
 	if us.checksumHash != nil {
-		if err = us.client.ensureExtension("checksum"); err != nil {
-			return
-		}
 		us.checksumHash.Reset()
 
 		if buf != nil {
@@ -211,9 +208,6 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
 
 	if us.SetFileSize && offset == 0 {
-		if err = us.client.ensureExtension("creation-defer-length"); err != nil {
-			return
-		}
 		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
 	}
 
@@ -306,6 +300,11 @@ func (us *UploadStream) validate() error {
 	}
 	if us.SetFileSize {
 		if err := us.client.ensureExtension("creation-defer-length"); err != nil {
+			return err
+		}
+	}
+	if us.checksumHash != nil {
+		if err := us.client.ensureExtension("checksum"); err != nil {
 			return err
 		}
 	}
