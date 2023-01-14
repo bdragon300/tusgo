@@ -39,18 +39,26 @@ type UploadStream struct {
 	client           *Client
 	dirtyBuffer      []byte
 	uploadMethod     string
+	ctx              context.Context
 }
 
 func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
-	us.client.ctx = ctx // FIXME: copy object
-	return us
+	res := *us
+	res.LastResponse = nil
+	res.dirtyBuffer = nil
+	res.ctx = ctx
+	return &res
 }
 
 func (us *UploadStream) WithChecksumAlgorithm(name checksum.Algorithm) *UploadStream {
+	res := *us
+	res.LastResponse = nil
+	res.dirtyBuffer = nil
+
 	f := checksum.Algorithms[name] // Get algorithm by name from list of known algorithms
-	us.checksumHash = f()          // FIXME: copy object
-	us.checksumHashName = name
-	return us
+	res.checksumHash = f()
+	res.checksumHashName = name
+	return &res
 }
 
 func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
@@ -113,8 +121,8 @@ func (us *UploadStream) Sync() error {
 	if err != nil {
 		return err
 	}
-	if us.client.ctx != nil {
-		req = req.WithContext(us.client.ctx)
+	if us.ctx != nil {
+		req = req.WithContext(us.ctx)
 	}
 
 	if us.LastResponse, err = us.client.client.Do(req); err != nil {
@@ -209,8 +217,8 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
 	}
 
-	if us.client.ctx != nil {
-		req = req.WithContext(us.client.ctx)
+	if us.ctx != nil {
+		req = req.WithContext(us.ctx)
 	}
 	if response, err = us.client.tusRequest(req); err != nil {
 		return
