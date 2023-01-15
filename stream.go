@@ -24,7 +24,7 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 		ChunkSize:    chunkSize,
 		file:         file,
 		client:       client,
-		uploadMethod: http.MethodPatch, // TODO: method override header
+		uploadMethod: http.MethodPatch,
 	}
 }
 
