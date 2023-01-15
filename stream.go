@@ -111,35 +111,13 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (us *UploadStream) Sync() error {
-	loc, err := url.Parse(us.file.Location)
-	if err != nil {
-		return err
+func (us *UploadStream) Sync() (response *http.Response, err error) {
+	f := File{}
+	if response, err = us.client.GetFile(us.file.Location, &f); err != nil {
+		return
 	}
-	u := us.client.BaseURL.ResolveReference(loc).String()
-	req, err := us.client.GetRequest(http.MethodHead, u, nil, us.client, us.client.client, us.client.capabilities)
-	if err != nil {
-		return err
-	}
-	if us.ctx != nil {
-		req = req.WithContext(us.ctx)
-	}
-
-	if us.LastResponse, err = us.client.client.Do(req); err != nil {
-		return err
-	}
-	if us.LastResponse.StatusCode >= 300 {
-		switch us.LastResponse.StatusCode {
-		case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
-			return ErrFileDoesNotExist
-		default:
-			return ErrUnknown
-		}
-	}
-	if us.file.RemoteOffset, err = strconv.ParseInt(us.LastResponse.Header.Get("Upload-Offset"), 10, 64); err != nil {
-		return err
-	}
-	return nil
+	us.file.RemoteOffset = f.RemoteOffset
+	return
 }
 
 func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64, offset int64, response *http.Response, err error) {
@@ -214,7 +192,7 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	if us.ctx != nil {
 		req = req.WithContext(us.ctx)
 	}
-	if response, err = us.client.tusRequest(req); err != nil {
+	if response, err = us.client.tusRequest(us.ctx, req); err != nil {
 		return
 	}
 	defer response.Body.Close()
@@ -223,11 +201,13 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	case http.StatusNoContent:
 		bytesUploaded = bytesToUpload
 		if offset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
+			err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", response.Header.Get("Upload-Offset"), ErrProtocol)
 			return
 		}
 		if v := response.Header.Get("Upload-Expires"); v != "" {
 			var t time.Time
 			if t, err = time.Parse(time.RFC1123, v); err != nil {
+				err = fmt.Errorf("cannot parse Upload-Expires RFC1123 header %q: %w", v, ErrProtocol)
 				return
 			}
 			us.file.UploadExpired = &t

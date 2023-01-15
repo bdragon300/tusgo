@@ -45,12 +45,55 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	return c
 }
 
-// TODO: GetFileInfo method
-//
-//	Upload-Offset may no tbe included (see concatenation)
-//	Upload-Length may be absent for concatenated uploads
-//
-// TODO: protocol error (HEAD headers?)
+func (c *Client) GetFile(location string, f *File) (response *http.Response, err error) {
+	if f == nil {
+		panic("f is nil")
+	}
+	*f = File{}
+
+	var loc *url.URL
+	if loc, err = url.Parse(location); err != nil {
+		return
+	}
+	u := c.BaseURL.ResolveReference(loc).String()
+
+	var req *http.Request
+	if req, err = c.GetRequest(http.MethodHead, u, nil, c, c.client, c.capabilities); err != nil {
+		return
+	}
+	if response, err = c.tusRequest(c.ctx, req); err != nil {
+		return
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusOK:
+		// TODO: can metadata, Expired be returned?
+		f.Location = location
+		f.Partial = response.Header.Get("Upload-Concat") == "partial"
+		uploadOffset := response.Header.Get("Upload-Offset")
+		if uploadOffset == "" && response.Header.Get("Upload-Concat") == "" {
+			err = fmt.Errorf("lack of Upload-Offset required header in response: %w", ErrProtocol)
+			return
+		}
+		if f.RemoteOffset, err = strconv.ParseInt(uploadOffset, 10, 64); err != nil {
+			err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", uploadOffset, ErrProtocol)
+			return
+		}
+		if v := response.Header.Get("Upload-Length"); v != "" {
+			if f.RemoteSize, err = strconv.ParseInt(v, 10, 64); err != nil {
+				err = fmt.Errorf("cannot parse Upload-Length header %q: %w", v, ErrProtocol)
+				return
+			}
+		}
+	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+		err = ErrFileDoesNotExist
+	default:
+		err = ErrUnknown
+	}
+	return
+}
+
 func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	if f == nil {
 		panic("f is nil")
@@ -85,7 +128,7 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 		req.Header.Set("Upload-Metadata", meta)
 	}
 
-	if response, err = c.tusRequest(req); err != nil {
+	if response, err = c.tusRequest(c.ctx, req); err != nil {
 		return
 	}
 	defer response.Body.Close()
@@ -140,7 +183,7 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 	if req, err = c.GetRequest(http.MethodDelete, u, nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
-	if response, err = c.tusRequest(req); err != nil {
+	if response, err = c.tusRequest(c.ctx, req); err != nil {
 		return
 	}
 	defer response.Body.Close()
@@ -192,7 +235,7 @@ func (c *Client) ConcatenateFiles(concatFile *File, files []File) (response *htt
 		req.Header.Set("Upload-Metadata", meta)
 	}
 
-	if response, err = c.tusRequest(req); err != nil {
+	if response, err = c.tusRequest(c.ctx, req); err != nil {
 		return
 	}
 	defer response.Body.Close()
@@ -235,7 +278,7 @@ func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 	if req, err = c.GetRequest(http.MethodOptions, c.BaseURL.String(), nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
-	if response, err = c.tusRequest(req); err != nil {
+	if response, err = c.tusRequest(c.ctx, req); err != nil {
 		return
 	}
 	defer response.Body.Close()
@@ -278,12 +321,12 @@ func (c *Client) Capabilities() *ServerCapabilities {
 	return c.capabilities
 }
 
-func (c *Client) tusRequest(req *http.Request) (response *http.Response, err error) {
+func (c *Client) tusRequest(ctx context.Context, req *http.Request) (response *http.Response, err error) {
 	if req.Method != http.MethodOptions && req.Header.Get("Tus-Resumable") == "" {
 		req.Header.Set("Tus-Resumable", c.ProtocolVersion)
 	}
-	if c.ctx != nil {
-		req = req.WithContext(c.ctx)
+	if ctx != nil {
+		req = req.WithContext(ctx)
 	}
 	response, err = c.client.Do(req)
 	if response.StatusCode == http.StatusPreconditionFailed {
