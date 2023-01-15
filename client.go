@@ -89,7 +89,7 @@ func (c *Client) GetFile(location string, f *File) (response *http.Response, err
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 	}
 	return
 }
@@ -139,7 +139,7 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	case http.StatusRequestEntityTooLarge:
 		err = ErrFileTooLarge
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 		if response.StatusCode < 300 {
 			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
@@ -193,7 +193,7 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 		if response.StatusCode < 300 {
 			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
@@ -247,7 +247,7 @@ func (c *Client) ConcatenateFiles(concatFile *File, files []File) (response *htt
 	case http.StatusNotFound, http.StatusGone: // TODO: check on server
 		err = fmt.Errorf("unable to concatenate files: %w", ErrFileDoesNotExist)
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 		if response.StatusCode < 300 {
 			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
@@ -309,7 +309,7 @@ func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrFileDoesNotExist
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 		if response.StatusCode < 300 {
 			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
@@ -350,7 +350,7 @@ func (c *Client) ensureExtension(extension string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("server extension %q is required: %w", extension, ErrUnsupportedOperation)
+	return fmt.Errorf("server extension %q is required: %w", extension, ErrUnsupportedFeature)
 }
 
 func (c *Client) maybeUpdateCapabilities() (err error) {

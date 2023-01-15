@@ -227,7 +227,7 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		}
 		fallthrough
 	default:
-		err = ErrUnknown
+		err = ErrUnexpectedResponse
 		if response.StatusCode < 300 {
 			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
 		}
