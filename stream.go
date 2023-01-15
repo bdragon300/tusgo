@@ -234,7 +234,9 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		}
 	case http.StatusConflict:
 		err = ErrOffsetsNotSynced
-	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+	case http.StatusForbidden:
+		err = ErrCannotUpload
+	case http.StatusNotFound, http.StatusGone:
 		err = ErrFileDoesNotExist
 	case http.StatusRequestEntityTooLarge:
 		err = ErrFileTooLarge

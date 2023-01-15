@@ -10,5 +10,6 @@ var (
 	ErrFileTooLarge         = errors.New("file is too large")
 	ErrOffsetsNotSynced     = errors.New("client and server offsets are not synced")
 	ErrChecksumMismatch     = errors.New("checksum mismatch")
+	ErrCannotUpload         = errors.New("can not upload")
 	ErrUnknown              = errors.New("unknown error")
 )

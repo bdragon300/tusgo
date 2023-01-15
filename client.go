@@ -45,6 +45,12 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 	return c
 }
 
+// TODO: GetFileInfo method
+//
+//	Upload-Offset may no tbe included (see concatenation)
+//	Upload-Length may be absent for concatenated uploads
+//
+// TODO: protocol error (HEAD headers?)
 func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	if f == nil {
 		panic("f is nil")
@@ -54,16 +60,14 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	}
 
 	var req *http.Request
-	var loc *url.URL
-	if loc, err = url.Parse(f.Location); err != nil {
-		return
-	}
-	u := c.BaseURL.ResolveReference(loc).String()
-	if req, err = c.GetRequest(http.MethodPost, u, nil, c, c.client, c.capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client, c.capabilities); err != nil {
 		return
 	}
 
 	req.Header.Set("Content-Length", strconv.FormatInt(0, 10))
+	if f.Partial {
+		req.Header.Set("Upload-Concat", "partial")
+	}
 	switch {
 	case f.RemoteSize == FileSizeUnknown:
 		req.Header.Set("Upload-Defer-Length", "1")
@@ -73,11 +77,13 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 		panic(fmt.Sprintf("file size is negative: %d", f.RemoteSize))
 	}
 
-	var meta string
-	if meta, err = EncodeMetadata(f.Metadata); err != nil {
-		return
+	if len(f.Metadata) > 0 {
+		var meta string
+		if meta, err = EncodeMetadata(f.Metadata); err != nil {
+			return
+		}
+		req.Header.Set("Upload-Metadata", meta)
 	}
-	req.Header.Set("Upload-Metadata", meta)
 
 	if response, err = c.tusRequest(req); err != nil {
 		return
@@ -107,7 +113,7 @@ func (c *Client) CreateFileWithData(stream *UploadStream, data []byte) (uploaded
 		return
 	}
 	prevStream := *stream
-	stream.ChunkSize = int64(len(data)) // Data can be uploaded in one request
+	stream.ChunkSize = int64(len(data)) // Data must be uploaded in one request
 	stream.uploadMethod = http.MethodPost
 
 	uploadedBytes, err = stream.Write(data)
@@ -151,6 +157,77 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 	}
 
 	return
+}
+
+func (c *Client) ConcatenateFiles(concatFile *File, files []File) (response *http.Response, err error) {
+	if len(files) == 0 {
+		panic("must be at least one file to concatenate")
+	}
+	if concatFile == nil {
+		panic("concatFile is nil")
+	}
+	if err = c.ensureExtension("concatenation"); err != nil {
+		return
+	}
+
+	var req *http.Request
+	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client, c.capabilities); err != nil {
+		return
+	}
+
+	locations := make([]string, 0)
+	for i, f := range files {
+		if !f.Partial {
+			return nil, fmt.Errorf("file #%d is not partial", i)
+		}
+		locations = append(locations, f.Location)
+	}
+	req.Header.Set("Upload-Concat", fmt.Sprintf("final;%s", strings.Join(locations, " ")))
+
+	if len(concatFile.Metadata) > 0 {
+		var meta string
+		if meta, err = EncodeMetadata(concatFile.Metadata); err != nil {
+			return
+		}
+		req.Header.Set("Upload-Metadata", meta)
+	}
+
+	if response, err = c.tusRequest(req); err != nil {
+		return
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusCreated:
+		concatFile.Partial = false
+		concatFile.Location = response.Header.Get("Location")
+	case http.StatusNotFound, http.StatusGone: // TODO: check on server
+		err = fmt.Errorf("unable to concatenate files: %w", ErrFileDoesNotExist)
+	default:
+		err = ErrUnknown
+		if response.StatusCode < 300 {
+			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
+		}
+	}
+	return
+}
+
+func (c *Client) ConcatenateStreams(concatFile *File, streams []*UploadStream) (response *http.Response, err error) {
+	if len(streams) == 0 {
+		panic("must be at least one stream to concatenate")
+	}
+
+	files := make([]File, 0)
+	for i, s := range streams {
+		if s.Tell() < s.Len() {
+			if err = c.ensureExtension("concatenation-unfinished"); err != nil {
+				return nil, fmt.Errorf("stream #%d is not finished: %w", i, err)
+			}
+		}
+		files = append(files, *s.file)
+	}
+
+	return c.ConcatenateFiles(concatFile, files)
 }
 
 func (c *Client) UpdateCapabilities() (response *http.Response, err error) {

@@ -10,4 +10,5 @@ type File struct {
 	Location      string
 	UploadExpired *time.Time
 	RemoteOffset  int64
+	Partial       bool
 }
