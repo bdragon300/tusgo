@@ -41,8 +41,9 @@ type Client struct {
 }
 
 func (c *Client) WithContext(ctx context.Context) *Client {
-	c.ctx = ctx
-	return c
+	res := *c
+	res.ctx = ctx
+	return &res
 }
 
 func (c *Client) GetFile(location string, f *File) (response *http.Response, err error) {
