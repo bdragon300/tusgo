@@ -25,6 +25,7 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 		file:         file,
 		client:       client,
 		uploadMethod: http.MethodPatch,
+		ctx:          client.ctx,
 	}
 }
 
