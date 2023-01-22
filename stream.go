@@ -177,8 +177,8 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 			if err = us.client.ensureExtension("checksum-trailer"); err != nil {
 				return
 			}
-			trailers := map[string]io.Reader{"Upload-Checksum": checksum.HashReader{us.checksumHash}}
-			data = checksum.NewTrailerReader(io.TeeReader(data, us.checksumHash), trailers, req)
+			trailers := map[string]io.Reader{"Upload-Checksum": checksum.NewHashBase64ReadWriter(us.checksumHash)}
+			data = checksum.NewDeferTrailerReader(io.TeeReader(data, us.checksumHash), trailers, req)
 		}
 	}
 	req.Body = io.NopCloser(data)

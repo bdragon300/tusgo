@@ -15,7 +15,6 @@ type Algorithm string
 
 //revive:disable
 const (
-	None        Algorithm = ""
 	MD4         Algorithm = "md4"
 	MD5         Algorithm = "md5"
 	SHA1        Algorithm = "sha1"
@@ -72,9 +71,6 @@ var Algorithms = map[Algorithm]func() hash.Hash{
 }
 
 func GetAlgorithm(name string) (algo Algorithm, ok bool) {
-	if name == string(None) {
-		return None, true
-	}
 	res := strings.Builder{}
 	for _, r := range name {
 		// Keep only letters and digits in the result, uppercase converting to lowercase
