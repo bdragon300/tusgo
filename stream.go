@@ -146,7 +146,7 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	u := us.client.BaseURL.ResolveReference(loc).String()
 
 	var req *http.Request
-	if req, err = us.client.GetRequest(us.uploadMethod, u, nil, us.client, us.client.client, us.client.capabilities); err != nil {
+	if req, err = us.client.GetRequest(us.uploadMethod, u, nil, us.client, us.client.client, us.client.Capabilities); err != nil {
 		return
 	}
 
@@ -229,9 +229,6 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		fallthrough
 	default:
 		err = ErrUnexpectedResponse
-		if response.StatusCode < 300 {
-			err = fmt.Errorf("server returned unexpected %d HTTP code: %w", response.StatusCode, ErrProtocol)
-		}
 	}
 	return
 }

@@ -1,6 +1,9 @@
 package tusgo
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrProtocol           = errors.New("tus protocol error")
@@ -10,5 +13,5 @@ var (
 	ErrFileDoesNotExist   = errors.New("file does not exist")
 	ErrOffsetsNotSynced   = errors.New("client stream and server offsets are not synced")
 	ErrChecksumMismatch   = errors.New("checksum mismatch")
-	ErrUnexpectedResponse = errors.New("unexpected response")
+	ErrUnexpectedResponse = fmt.Errorf("unexpected HTTP response code: %w", ErrProtocol)
 )
