@@ -2,8 +2,13 @@ package tusgo
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/bdragon300/tusgo/checksum"
 	. "github.com/onsi/ginkgo/v2"
@@ -142,7 +147,7 @@ var _ = Describe("Client", func() {
 					)
 					f := File{}
 
-					Ω(testClient.GetFile("/foo/bar", &f)).ShouldNot(BeNil())
+					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
@@ -158,7 +163,7 @@ var _ = Describe("Client", func() {
 					)
 					f := File{}
 
-					Ω(testClient.GetFile("/foo/bar", &f)).ShouldNot(BeNil())
+					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
@@ -176,7 +181,7 @@ var _ = Describe("Client", func() {
 					)
 					f := File{}
 
-					Ω(testClient.GetFile("/foo/bar", &f)).ShouldNot(BeNil())
+					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
@@ -192,7 +197,7 @@ var _ = Describe("Client", func() {
 					)
 					f := File{}
 
-					Ω(testClient.GetFile("/foo/bar", &f)).ShouldNot(BeNil())
+					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						Location:   "/foo/bar",
 						Partial:    false,
@@ -204,7 +209,7 @@ var _ = Describe("Client", func() {
 		Context("error path", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
-					Ω(func() { _, _ = testClient.GetFile("/foo/bar", nil) }).Should(Panic())
+					Ω(func() { _, _ = testClient.GetFile(nil, "/foo/bar") }).Should(Panic())
 				})
 			})
 			When("http error or unexpected code", func() {
@@ -213,7 +218,7 @@ var _ = Describe("Client", func() {
 						srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).Reply(reply.Status(status)))
 						f := File{}
 
-						resp, err := testClient.GetFile("/foo/bar", &f)
+						resp, err := testClient.GetFile(&f, "/foo/bar")
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
 						Ω(f).Should(Equal(File{}))
@@ -234,7 +239,7 @@ var _ = Describe("Client", func() {
 						)
 						f := File{}
 
-						resp, err := testClient.GetFile("/foo/bar", &f)
+						resp, err := testClient.GetFile(&f, "/foo/bar")
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(ErrProtocol))
 						Ω(f).Should(Equal(File{}))
@@ -259,9 +264,9 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{RemoteSize: 1024}
+					f := File{}
 
-					Ω(testClient.CreateFile(&f)).ShouldNot(BeNil())
+					Ω(testClient.CreateFile(&f, 1024, false, nil)).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
@@ -283,9 +288,9 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{RemoteSize: 1024, Metadata: md}
+					f := File{}
 
-					Ω(testClient.CreateFile(&f)).ShouldNot(BeNil())
+					Ω(testClient.CreateFile(&f, 1024, false, md)).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
@@ -309,9 +314,9 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{RemoteSize: 1024, Metadata: md, Partial: true}
+					f := File{}
 
-					Ω(testClient.CreateFile(&f)).ShouldNot(BeNil())
+					Ω(testClient.CreateFile(&f, 1024, true, md)).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
@@ -337,9 +342,9 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{RemoteSize: FileSizeUnknown, Metadata: md, Partial: true}
+					f := File{}
 
-					Ω(testClient.CreateFile(&f)).ShouldNot(BeNil())
+					Ω(testClient.CreateFile(&f, FileSizeUnknown, true, nil)).ShouldNot(BeNil())
 					Ω(f).Should(Equal(File{
 						RemoteSize: FileSizeUnknown,
 						Location:   "/foo/bar",
@@ -352,20 +357,20 @@ var _ = Describe("Client", func() {
 		Context("error path", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
-					Ω(func() { _, _ = testClient.CreateFile(nil) }).Should(Panic())
+					Ω(func() { _, _ = testClient.CreateFile(nil, 1024, false, nil) }).Should(Panic())
 				})
 			})
 			Specify("no creation extension", func() {
-				f := File{RemoteSize: 1024}
-				_, err := testClient.CreateFile(&f)
+				f := File{}
+				_, err := testClient.CreateFile(&f, 1024, false, nil)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'creation' is required")),
 				))
 			})
 			Specify("no creation-defer-length extension and trying to create defer size file", func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
-				f := File{RemoteSize: FileSizeUnknown}
-				_, err := testClient.CreateFile(&f)
+				f := File{}
+				_, err := testClient.CreateFile(&f, FileSizeUnknown, false, nil)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'creation-defer-length' is required")),
 				))
@@ -373,8 +378,8 @@ var _ = Describe("Client", func() {
 			When("file size is negative", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
-					f := File{RemoteSize: -2}
-					Ω(func() { _, _ = testClient.CreateFile(&f) }).Should(Panic())
+					f := File{}
+					Ω(func() { _, _ = testClient.CreateFile(&f, -2, false, nil) }).Should(Panic())
 				})
 			})
 			Specify("metadata key contains a space", func() {
@@ -383,8 +388,8 @@ var _ = Describe("Client", func() {
 					"key 1": "value1",
 					"key2":  "&^%$\"\t",
 				}
-				f := File{RemoteSize: 1024, Metadata: md}
-				_, err := testClient.CreateFile(&f)
+				f := File{}
+				_, err := testClient.CreateFile(&f, 1024, false, md)
 				Ω(err).Should(MatchError(ContainSubstring("key 'key 1' contains spaces")))
 			})
 			When("http error or unexpected code", func() {
@@ -392,9 +397,9 @@ var _ = Describe("Client", func() {
 					func(status int, expectErr error) {
 						testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
 						srvMock.AddMocks(tRequest(http.MethodPost, "/foo/bar", nil).Reply(reply.Status(status)))
-						f := File{RemoteSize: 1024}
+						f := File{}
 
-						resp, err := testClient.CreateFile(&f)
+						resp, err := testClient.CreateFile(&f, 1024, false, nil)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
 						Ω(f).Should(Equal(File{RemoteSize: 1024}))
@@ -476,7 +481,7 @@ var _ = Describe("Client", func() {
 					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
 					f := File{}
 
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2})).Should(Succeed())
+					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)).Should(Succeed())
 					Ω(f).Should(Equal(File{
 						Location: "/foo/bar/baz",
 						Partial:  false,
@@ -498,9 +503,9 @@ var _ = Describe("Client", func() {
 					)
 					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
 					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					f := File{Metadata: md}
+					f := File{}
 
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2})).Should(Succeed())
+					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, md)).Should(Succeed())
 					Ω(f).Should(Equal(File{
 						Location: "/foo/bar/baz",
 						Partial:  false,
@@ -515,14 +520,14 @@ var _ = Describe("Client", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
 					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
 					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					Ω(func() { _, _ = testClient.ConcatenateFiles(nil, []File{f1, f2}) }).Should(Panic())
+					Ω(func() { _, _ = testClient.ConcatenateFiles(nil, []File{f1, f2}, nil) }).Should(Panic())
 				})
 			})
 			When("files list is empty", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
 					f := File{}
-					Ω(func() { _, _ = testClient.ConcatenateFiles(&f, nil) }).Should(Panic())
+					Ω(func() { _, _ = testClient.ConcatenateFiles(&f, nil, nil) }).Should(Panic())
 					Ω(f).Should(Equal(File{}))
 				})
 			})
@@ -531,7 +536,7 @@ var _ = Describe("Client", func() {
 					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
 					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
 					f := File{}
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2})).Should(MatchError(ContainSubstring("server extension 'concatenation' is required")))
+					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)).Should(MatchError(ContainSubstring("server extension 'concatenation' is required")))
 					Ω(f).Should(Equal(File{}))
 				})
 			})
@@ -542,7 +547,7 @@ var _ = Describe("Client", func() {
 					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: false}
 					f3 := File{Location: "/foo/baa", RemoteSize: 512, RemoteOffset: 512, Partial: true}
 					f := File{}
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2, f3})).Should(MatchError(ContainSubstring("file '/foo/baz' is not partial")))
+					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2, f3}, nil)).Should(MatchError(ContainSubstring("file '/foo/baz' is not partial")))
 					Ω(f).Should(Equal(File{}))
 				})
 			})
@@ -555,7 +560,7 @@ var _ = Describe("Client", func() {
 						f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
 						f := File{}
 
-						resp, err := testClient.ConcatenateFiles(&f, []File{f1, f2})
+						resp, err := testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
 						Ω(f).Should(Equal(File{}))
@@ -658,3 +663,66 @@ var _ = Describe("Client", func() {
 		})
 	})
 })
+
+func ExampleClient_CreateFile() {
+	u, err := url.Parse("http://example.com/files")
+	if err != nil {
+		panic(err)
+	}
+	cl := NewClient(http.DefaultClient, u)
+	if _, err = cl.UpdateCapabilities(); err != nil {
+		panic(err)
+	}
+
+	f := File{}
+	// Create an upload with size 1024 bytes
+	if _, err = cl.CreateFile(&f, 1024, false, nil); err != nil {
+		panic(err)
+	}
+	fmt.Printf("Location: %s", f.Location)
+}
+
+func ExampleClient_ConcatenateFiles() {
+	u, err := url.Parse("http://example.com/files")
+	if err != nil {
+		panic(err)
+	}
+	cl := NewClient(http.DefaultClient, u)
+	if _, err = cl.UpdateCapabilities(); err != nil {
+		panic(err)
+	}
+
+	wg := &sync.WaitGroup{}
+	writeStream := func(s *UploadStream, size int64) {
+		src := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), size)
+		if _, err := io.Copy(s, src); err != nil {
+			panic(err)
+		}
+		fmt.Println("Copying file completed")
+		wg.Done()
+	}
+	wg.Add(2)
+
+	// Create the 1st partial upload with size 1024 bytes
+	f1 := File{}
+	if _, err = cl.CreateFile(&f1, 1024, true, nil); err != nil {
+		panic(err)
+	}
+	go writeStream(NewUploadStream(cl, &f1), 1024)
+
+	// Create the 2nd partial upload with size 512 bytes
+	f2 := File{}
+	if _, err = cl.CreateFile(&f2, 512, true, nil); err != nil {
+		panic(err)
+	}
+	go writeStream(NewUploadStream(cl, &f1), 512)
+
+	wg.Wait()
+	// Concatenate partial uploads into a final upload
+	finalFile := File{}
+	if _, err = cl.ConcatenateFiles(&finalFile, []File{f1, f2}, nil); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Location: %s", finalFile.Location)
+}

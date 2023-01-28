@@ -114,7 +114,7 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 
 func (us *UploadStream) Sync() (response *http.Response, err error) {
 	f := File{}
-	if response, err = us.client.GetFile(us.file.Location, &f); err != nil {
+	if response, err = us.client.GetFile(&f, us.file.Location); err != nil {
 		return
 	}
 	us.file.RemoteOffset = f.RemoteOffset

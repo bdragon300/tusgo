@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bdragon300/tusgo/checksum"
 )
@@ -69,11 +70,10 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 //
 // This method may return ErrFileDoesNotExist error if upload with such location has not found on the server. If other
 // unexpected response has received from the server, method returns ErrUnexpectedResponse
-func (c *Client) GetFile(location string, f *File) (response *http.Response, err error) {
+func (c *Client) GetFile(f *File, location string) (response *http.Response, err error) {
 	if f == nil {
 		panic("f is nil")
 	}
-	*f = File{}
 
 	var loc *url.URL
 	if loc, err = url.Parse(location); err != nil {
@@ -93,8 +93,10 @@ func (c *Client) GetFile(location string, f *File) (response *http.Response, err
 	switch response.StatusCode {
 	case http.StatusOK:
 		// TODO: can metadata, Expired be returned?
+		f.Reset()
 		f.Location = location
 		f.Partial = response.Header.Get("Upload-Concat") == "partial"
+
 		uploadOffset := response.Header.Get("Upload-Offset")
 		// Upload-Offset may not be present if final upload concatenation still in progress on server side
 		if uploadOffset == "" {
@@ -124,19 +126,19 @@ func (c *Client) GetFile(location string, f *File) (response *http.Response, err
 	return
 }
 
-// CreateFile creates upload on the server. Receives a pointer to File, that also is filled with location of a created
-// upload. Returns http response from server (with closed body) and error (if any).
+// CreateFile creates upload on the server. Receives a pointer to File, that also is filled with upload info.
+// Returns http response from server (with closed body) and error (if any).
 //
 // Server must support "creation" extension. We create an upload with given size and metadata.
 // If Partial flag is true, we create a partial upload. Metadata map keys must not contain spaces.
 //
-// If upload size is equal to FileSizeUnknown, we create an upload with deferred size, i.e. upload with size that is
+// If `remoteSize` is equal to FileSizeUnknown, we create an upload with deferred size, i.e. upload with size that is
 // unknown for a moment, but must be known once the upload will be started. Server must also support
 // "creation-defer-length" extension for this feature.
 //
 // This method may return ErrFileTooLarge if upload size exceeds maximum MaxSize that server is capable to accept.
 // If other unexpected response has received from the server, method returns ErrUnexpectedResponse
-func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
+func (c *Client) CreateFile(f *File, remoteSize int64, partial bool, meta map[string]string) (response *http.Response, err error) {
 	if f == nil {
 		panic("f is nil")
 	}
@@ -150,27 +152,27 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 	}
 
 	req.Header.Set("Content-Length", strconv.FormatInt(0, 10))
-	if f.Partial {
+	if partial {
 		req.Header.Set("Upload-Concat", "partial")
 	}
 	switch {
-	case f.RemoteSize == FileSizeUnknown:
+	case remoteSize == FileSizeUnknown:
 		if err = c.ensureExtension("creation-defer-length"); err != nil {
 			return
 		}
 		req.Header.Set("Upload-Defer-Length", "1")
-	case f.RemoteSize > 0:
-		req.Header.Set("Upload-Length", strconv.FormatInt(f.RemoteSize, 10))
+	case remoteSize > 0:
+		req.Header.Set("Upload-Length", strconv.FormatInt(remoteSize, 10))
 	default:
-		panic(fmt.Sprintf("file size is negative: %d", f.RemoteSize))
+		panic(fmt.Sprintf("file size is negative: %d", remoteSize))
 	}
 
-	if len(f.Metadata) > 0 {
-		var meta string
-		if meta, err = EncodeMetadata(f.Metadata); err != nil {
+	if len(meta) > 0 {
+		var m string
+		if m, err = EncodeMetadata(meta); err != nil {
 			return
 		}
-		req.Header.Set("Upload-Metadata", meta)
+		req.Header.Set("Upload-Metadata", m)
 	}
 
 	if response, err = c.tusRequest(c.ctx, req); err != nil {
@@ -180,7 +182,19 @@ func (c *Client) CreateFile(f *File) (response *http.Response, err error) {
 
 	switch response.StatusCode {
 	case http.StatusCreated:
+		f.Reset()
 		f.Location = response.Header.Get("Location")
+		f.Metadata = meta
+		f.Partial = partial
+		f.RemoteSize = remoteSize
+		if v := response.Header.Get("Upload-Expires"); v != "" {
+			var t time.Time
+			if t, err = time.Parse(time.RFC1123, v); err != nil {
+				err = fmt.Errorf("cannot parse Upload-Expires RFC1123 header %q: %w", v, ErrProtocol)
+				return
+			}
+			f.UploadExpired = &t
+		}
 	case http.StatusRequestEntityTooLarge:
 		err = ErrFileTooLarge
 	default:
@@ -265,7 +279,7 @@ func (c *Client) DeleteFile(f *File) (response *http.Response, err error) {
 //
 // This method may return ErrUnsupportedFeature if server doesn't support extension, or ErrUnexpectedResponse if
 // unexpected response has been received from server.
-func (c *Client) ConcatenateFiles(final *File, files []File) (response *http.Response, err error) {
+func (c *Client) ConcatenateFiles(final *File, files []File, meta map[string]string) (response *http.Response, err error) {
 	if len(files) == 0 {
 		panic("must be at least one file to concatenate")
 	}
@@ -290,12 +304,12 @@ func (c *Client) ConcatenateFiles(final *File, files []File) (response *http.Res
 	}
 	req.Header.Set("Upload-Concat", "final;"+strings.Join(locations, " "))
 
-	if len(final.Metadata) > 0 {
-		var meta string
-		if meta, err = EncodeMetadata(final.Metadata); err != nil {
+	if len(meta) > 0 {
+		var m string
+		if m, err = EncodeMetadata(meta); err != nil {
 			return
 		}
-		req.Header.Set("Upload-Metadata", meta)
+		req.Header.Set("Upload-Metadata", m)
 	}
 
 	if response, err = c.tusRequest(c.ctx, req); err != nil {
@@ -305,8 +319,9 @@ func (c *Client) ConcatenateFiles(final *File, files []File) (response *http.Res
 
 	switch response.StatusCode {
 	case http.StatusCreated:
-		final.Partial = false
+		final.Reset()
 		final.Location = response.Header.Get("Location")
+		final.Metadata = meta
 	case http.StatusNotFound, http.StatusGone: // TODO: check on server
 		err = fmt.Errorf("unable to concatenate files: %w", ErrFileDoesNotExist)
 	default:
@@ -324,7 +339,7 @@ func (c *Client) ConcatenateFiles(final *File, files []File) (response *http.Res
 //
 // This method may return ErrUnsupportedFeature if server doesn't support extension, or ErrUnexpectedResponse if
 // unexpected response has been received from server.
-func (c *Client) ConcatenateStreams(final *File, streams []*UploadStream) (response *http.Response, err error) {
+func (c *Client) ConcatenateStreams(final *File, streams []*UploadStream, meta map[string]string) (response *http.Response, err error) {
 	if len(streams) == 0 {
 		panic("must be at least one stream to concatenate")
 	}
@@ -339,7 +354,7 @@ func (c *Client) ConcatenateStreams(final *File, streams []*UploadStream) (respo
 		files = append(files, *s.file)
 	}
 
-	return c.ConcatenateFiles(final, files)
+	return c.ConcatenateFiles(final, files, meta)
 }
 
 // UpdateCapabilities gathers server capabilities and updates Capabilities variable. Returns http response from server
@@ -417,7 +432,7 @@ func (c *Client) ensureExtension(extension string) error {
 	return fmt.Errorf("server extension %q is required: %w", extension, ErrUnsupportedFeature)
 }
 
-// EncodeMetadata converts a map of values to Tus Upload-Metadata header format
+// EncodeMetadata converts map of values to the Tus Upload-Metadata header format
 func EncodeMetadata(metadata map[string]string) (string, error) {
 	var encoded []string
 
