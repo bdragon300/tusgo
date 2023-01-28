@@ -2,9 +2,9 @@ package tusgo
 
 import "time"
 
-const FileSizeUnknown = -1
+const SizeUnknown = -1
 
-type File struct {
+type Upload struct {
 	Metadata      map[string]string
 	RemoteSize    int64
 	Location      string
@@ -13,7 +13,7 @@ type File struct {
 	Partial       bool
 }
 
-func (f *File) Reset() {
+func (f *Upload) Reset() {
 	f.Metadata = nil
 	f.RemoteSize = 0
 	f.Location = ""

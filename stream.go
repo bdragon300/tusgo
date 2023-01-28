@@ -15,14 +15,14 @@ import (
 	"github.com/bdragon300/tusgo/checksum"
 )
 
-func NewUploadStream(client *Client, file *File) *UploadStream {
-	if file == nil {
-		panic("file is nil")
+func NewUploadStream(client *Client, upload *Upload) *UploadStream {
+	if upload == nil {
+		panic("upload is nil")
 	}
 	const chunkSize = 2 * 1024 * 1024
 	return &UploadStream{
 		ChunkSize:    chunkSize,
-		file:         file,
+		upload:       upload,
 		client:       client,
 		uploadMethod: http.MethodPatch,
 		ctx:          client.ctx,
@@ -30,13 +30,13 @@ func NewUploadStream(client *Client, file *File) *UploadStream {
 }
 
 type UploadStream struct {
-	ChunkSize    int64
-	LastResponse *http.Response
-	SetFileSize  bool
+	ChunkSize     int64
+	LastResponse  *http.Response
+	SetUploadSize bool
 
 	checksumHash     hash.Hash
 	checksumHashName checksum.Algorithm
-	file             *File
+	upload           *Upload
 	client           *Client
 	dirtyBuffer      []byte
 	uploadMethod     string
@@ -113,11 +113,11 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 }
 
 func (us *UploadStream) Sync() (response *http.Response, err error) {
-	f := File{}
-	if response, err = us.client.GetFile(&f, us.file.Location); err != nil {
+	f := Upload{}
+	if response, err = us.client.GetUpload(&f, us.upload.Location); err != nil {
 		return
 	}
-	us.file.RemoteOffset = f.RemoteOffset
+	us.upload.RemoteOffset = f.RemoteOffset
 	return
 }
 
@@ -125,13 +125,13 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	if err = us.validate(); err != nil {
 		return
 	}
-	offset = us.file.RemoteOffset
+	offset = us.upload.RemoteOffset
 	bytesToUpload := int64(-1)
 	if buf != nil {
 		bytesToUpload = int64(len(buf))
 	}
 
-	remoteBytesLeft := us.file.RemoteSize - offset
+	remoteBytesLeft := us.upload.RemoteSize - offset
 	if bytesToUpload > remoteBytesLeft {
 		bytesToUpload = remoteBytesLeft
 	}
@@ -140,7 +140,7 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	}
 
 	var loc *url.URL
-	if loc, err = url.Parse(us.file.Location); err != nil {
+	if loc, err = url.Parse(us.upload.Location); err != nil {
 		return
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
@@ -186,8 +186,8 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
 	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
 
-	if us.SetFileSize && offset == 0 {
-		req.Header.Set("Upload-Length", strconv.FormatInt(us.file.RemoteSize, 10))
+	if us.SetUploadSize && offset == 0 {
+		req.Header.Set("Upload-Length", strconv.FormatInt(us.upload.RemoteSize, 10))
 	}
 
 	if us.ctx != nil {
@@ -211,16 +211,16 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 				err = fmt.Errorf("cannot parse Upload-Expires RFC1123 header %q: %w", v, ErrProtocol)
 				return
 			}
-			us.file.UploadExpired = &t
+			us.upload.UploadExpired = &t
 		}
 	case http.StatusConflict:
 		err = ErrOffsetsNotSynced
 	case http.StatusForbidden:
 		err = ErrCannotUpload
 	case http.StatusNotFound, http.StatusGone:
-		err = ErrFileDoesNotExist
+		err = ErrUploadDoesNotExist
 	case http.StatusRequestEntityTooLarge:
-		err = ErrFileTooLarge
+		err = ErrUploadTooLarge
 	case 460: // Non-standard HTTP code '460 Checksum Mismatch'
 		if us.checksumHash != nil {
 			err = ErrChecksumMismatch
@@ -239,28 +239,28 @@ func (us *UploadStream) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekStart:
 		newOffset = offset
 	case io.SeekCurrent:
-		newOffset = us.file.RemoteOffset + offset
+		newOffset = us.upload.RemoteOffset + offset
 	case io.SeekEnd:
-		newOffset = us.file.RemoteSize - 1 + offset
+		newOffset = us.upload.RemoteSize - 1 + offset
 	default:
 		panic("unknown whence value")
 	}
-	if offset >= us.file.RemoteSize {
-		return newOffset, fmt.Errorf("offset %d exceeds the file size %d bytes", newOffset, us.file.RemoteSize)
+	if offset >= us.upload.RemoteSize {
+		return newOffset, fmt.Errorf("offset %d exceeds the upload size %d bytes", newOffset, us.upload.RemoteSize)
 	}
 	if offset < 0 {
 		return newOffset, fmt.Errorf("offset %d is negative", newOffset)
 	}
-	us.file.RemoteOffset = newOffset
+	us.upload.RemoteOffset = newOffset
 	return newOffset, nil
 }
 
 func (us *UploadStream) Tell() int64 {
-	return us.file.RemoteOffset
+	return us.upload.RemoteOffset
 }
 
 func (us *UploadStream) Len() int64 {
-	return us.file.RemoteSize
+	return us.upload.RemoteSize
 }
 
 func (us *UploadStream) Dirty() bool {
@@ -272,13 +272,13 @@ func (us *UploadStream) Reset() {
 }
 
 func (us *UploadStream) validate() error {
-	if us.file.RemoteSize == FileSizeUnknown {
-		panic("file with unknown size")
+	if us.upload.RemoteSize == SizeUnknown {
+		panic("upload with unknown size")
 	}
-	if us.file.RemoteSize < 0 {
-		panic(fmt.Sprintf("file size is negative %d", us.file.RemoteSize))
+	if us.upload.RemoteSize < 0 {
+		panic(fmt.Sprintf("upload size is negative %d", us.upload.RemoteSize))
 	}
-	if us.SetFileSize {
+	if us.SetUploadSize {
 		if err := us.client.ensureExtension("creation-defer-length"); err != nil {
 			return err
 		}
@@ -299,10 +299,10 @@ func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err 
 	if _, offset, us.LastResponse, err = us.Upload(r, us.dirtyBuffer); err != nil {
 		return
 	}
-	if offset <= us.file.RemoteOffset {
-		err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.file.RemoteOffset, offset, ErrProtocol)
+	if offset <= us.upload.RemoteOffset {
+		err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.upload.RemoteOffset, offset, ErrProtocol)
 		return
 	}
-	us.file.RemoteOffset = offset
+	us.upload.RemoteOffset = offset
 	return
 }

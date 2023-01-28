@@ -137,34 +137,34 @@ var _ = Describe("Client", func() {
 			})
 		})
 	})
-	Context("GetFile", func() {
+	Context("GetUpload", func() {
 		Context("happy path", func() {
-			When("ordinary file", func() {
-				It("should get file info", func() {
+			When("ordinary upload", func() {
+				It("should get upload info", func() {
 					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
 						Reply(tReply(reply.OK()).
 							Header("Upload-Offset", "64")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
 					}))
 				})
 			})
 			When("partial upload", func() {
-				It("should get file info", func() {
+				It("should get upload info", func() {
 					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
 						Reply(tReply(reply.OK()).
 							Header("Upload-Concat", "partial").
 							Header("Upload-Offset", "64")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
 						Partial:      true,
@@ -172,33 +172,33 @@ var _ = Describe("Client", func() {
 				})
 			})
 			When("final upload", func() {
-				It("should get file info", func() {
+				It("should get upload info", func() {
 					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
 						Reply(tReply(reply.OK()).
 							Header("Upload-Concat", "final").
 							Header("Upload-Offset", "64").
 							Header("Upload-Length", "1024")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
 						Partial:      false,
 						RemoteSize:   1024,
 					}))
 				})
-				It("should get file info without Upload-Offset header", func() {
+				It("should get upload info without Upload-Offset header", func() {
 					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
 						Reply(tReply(reply.OK()).
 							Header("Upload-Concat", "final").
 							Header("Upload-Length", "1024")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.GetFile(&f, "/foo/bar")).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						Location:   "/foo/bar",
 						Partial:    false,
 						RemoteSize: 1024,
@@ -209,23 +209,23 @@ var _ = Describe("Client", func() {
 		Context("error path", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
-					Ω(func() { _, _ = testClient.GetFile(nil, "/foo/bar") }).Should(Panic())
+					Ω(func() { _, _ = testClient.GetUpload(nil, "/foo/bar") }).Should(Panic())
 				})
 			})
 			When("http error or unexpected code", func() {
 				DescribeTable("should return error",
 					func(status int, expectErr error) {
 						srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).Reply(reply.Status(status)))
-						f := File{}
+						f := Upload{}
 
-						resp, err := testClient.GetFile(&f, "/foo/bar")
+						resp, err := testClient.GetUpload(&f, "/foo/bar")
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
-						Ω(f).Should(Equal(File{}))
+						Ω(f).Should(Equal(Upload{}))
 					},
-					Entry("404", http.StatusNotFound, ErrFileDoesNotExist),
-					Entry("410", http.StatusGone, ErrFileDoesNotExist),
-					Entry("403", http.StatusForbidden, ErrFileDoesNotExist),
+					Entry("404", http.StatusNotFound, ErrUploadDoesNotExist),
+					Entry("410", http.StatusGone, ErrUploadDoesNotExist),
+					Entry("403", http.StatusForbidden, ErrUploadDoesNotExist),
 					Entry("400", http.StatusBadRequest, ErrUnexpectedResponse),
 					Entry("201", http.StatusCreated, ErrUnexpectedResponse),
 				)
@@ -237,12 +237,12 @@ var _ = Describe("Client", func() {
 							Reply(tReply(reply.OK()).
 								Header(header, value)),
 						)
-						f := File{}
+						f := Upload{}
 
-						resp, err := testClient.GetFile(&f, "/foo/bar")
+						resp, err := testClient.GetUpload(&f, "/foo/bar")
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(ErrProtocol))
-						Ω(f).Should(Equal(File{}))
+						Ω(f).Should(Equal(Upload{}))
 					},
 					Entry("Upload-Offset", "Upload-Offset", "asdf"),
 					Entry("Upload-Length", "Upload-Length", "asdf"),
@@ -250,13 +250,13 @@ var _ = Describe("Client", func() {
 			})
 		})
 	})
-	Context("CreateFile", func() {
+	Context("CreateUpload", func() {
 		Context("happy path", func() {
 			BeforeEach(func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
 			})
-			When("file with size, without metadata", func() {
-				It("should create file", func() {
+			When("upload with size, without metadata", func() {
+				It("should create upload", func() {
 					eh := []string{"Upload-Metadata", "Upload-Concat", "Upload-Defer-Length"}
 					srvMock.AddMocks(tRequest(http.MethodPost, "/", eh).
 						Header("Content-Length", expect.ToEqual("0")).
@@ -264,17 +264,17 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.CreateFile(&f, 1024, false, nil)).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.CreateUpload(&f, 1024, false, nil)).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
 					}))
 				})
 			})
-			When("file with size, with metadata", func() {
-				It("should encode metadata and create file", func() {
+			When("upload with size, with metadata", func() {
+				It("should encode metadata and create upload", func() {
 					eh := []string{"Upload-Concat", "Upload-Defer-Length"}
 					md := map[string]string{
 						"key1": "value1",
@@ -288,18 +288,18 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.CreateFile(&f, 1024, false, md)).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.CreateUpload(&f, 1024, false, md)).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
 						Metadata:   md,
 					}))
 				})
 			})
-			When("partial file with size, with metadata", func() {
-				It("should encode metadata and create file", func() {
+			When("partial upload with size, with metadata", func() {
+				It("should encode metadata and create upload", func() {
 					eh := []string{"Upload-Defer-Length"}
 					md := map[string]string{
 						"key1": "value1",
@@ -314,10 +314,10 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.CreateFile(&f, 1024, true, md)).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.CreateUpload(&f, 1024, true, md)).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
 						RemoteSize: 1024,
 						Location:   "/foo/bar",
 						Metadata:   md,
@@ -325,8 +325,8 @@ var _ = Describe("Client", func() {
 					}))
 				})
 			})
-			When("partial file with defer size, with metadata", func() {
-				It("should encode metadata and create file", func() {
+			When("partial upload with defer size, with metadata", func() {
+				It("should encode metadata and create upload", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation-defer-length")
 					eh := []string{"Upload-Length"}
 					md := map[string]string{
@@ -342,11 +342,11 @@ var _ = Describe("Client", func() {
 						Reply(tReply(reply.Created()).
 							Header("Location", "/foo/bar")),
 					)
-					f := File{}
+					f := Upload{}
 
-					Ω(testClient.CreateFile(&f, FileSizeUnknown, true, nil)).ShouldNot(BeNil())
-					Ω(f).Should(Equal(File{
-						RemoteSize: FileSizeUnknown,
+					Ω(testClient.CreateUpload(&f, SizeUnknown, true, nil)).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
+						RemoteSize: SizeUnknown,
 						Location:   "/foo/bar",
 						Metadata:   md,
 						Partial:    true,
@@ -357,29 +357,29 @@ var _ = Describe("Client", func() {
 		Context("error path", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
-					Ω(func() { _, _ = testClient.CreateFile(nil, 1024, false, nil) }).Should(Panic())
+					Ω(func() { _, _ = testClient.CreateUpload(nil, 1024, false, nil) }).Should(Panic())
 				})
 			})
 			Specify("no creation extension", func() {
-				f := File{}
-				_, err := testClient.CreateFile(&f, 1024, false, nil)
+				f := Upload{}
+				_, err := testClient.CreateUpload(&f, 1024, false, nil)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'creation' is required")),
 				))
 			})
-			Specify("no creation-defer-length extension and trying to create defer size file", func() {
+			Specify("no creation-defer-length extension and trying to create defer size upload", func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
-				f := File{}
-				_, err := testClient.CreateFile(&f, FileSizeUnknown, false, nil)
+				f := Upload{}
+				_, err := testClient.CreateUpload(&f, SizeUnknown, false, nil)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'creation-defer-length' is required")),
 				))
 			})
-			When("file size is negative", func() {
+			When("upload size is negative", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
-					f := File{}
-					Ω(func() { _, _ = testClient.CreateFile(&f, -2, false, nil) }).Should(Panic())
+					f := Upload{}
+					Ω(func() { _, _ = testClient.CreateUpload(&f, -2, false, nil) }).Should(Panic())
 				})
 			})
 			Specify("metadata key contains a space", func() {
@@ -388,8 +388,8 @@ var _ = Describe("Client", func() {
 					"key 1": "value1",
 					"key2":  "&^%$\"\t",
 				}
-				f := File{}
-				_, err := testClient.CreateFile(&f, 1024, false, md)
+				f := Upload{}
+				_, err := testClient.CreateUpload(&f, 1024, false, md)
 				Ω(err).Should(MatchError(ContainSubstring("key 'key 1' contains spaces")))
 			})
 			When("http error or unexpected code", func() {
@@ -397,14 +397,14 @@ var _ = Describe("Client", func() {
 					func(status int, expectErr error) {
 						testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
 						srvMock.AddMocks(tRequest(http.MethodPost, "/foo/bar", nil).Reply(reply.Status(status)))
-						f := File{}
+						f := Upload{}
 
-						resp, err := testClient.CreateFile(&f, 1024, false, nil)
+						resp, err := testClient.CreateUpload(&f, 1024, false, nil)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
-						Ω(f).Should(Equal(File{RemoteSize: 1024}))
+						Ω(f).Should(Equal(Upload{RemoteSize: 1024}))
 					},
-					Entry("413", http.StatusRequestEntityTooLarge, ErrFileTooLarge),
+					Entry("413", http.StatusRequestEntityTooLarge, ErrUploadTooLarge),
 					Entry("404", http.StatusNotFound, ErrUnexpectedResponse),
 					Entry("410", http.StatusGone, ErrUnexpectedResponse),
 					Entry("403", http.StatusForbidden, ErrUnexpectedResponse),
@@ -414,8 +414,8 @@ var _ = Describe("Client", func() {
 			})
 		})
 	})
-	PContext("CreateFileWithData")
-	Context("DeleteFile", func() {
+	PContext("CreateUploadWithData")
+	Context("DeleteUpload", func() {
 		Context("happy path", func() {
 			BeforeEach(func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "termination")
@@ -425,20 +425,20 @@ var _ = Describe("Client", func() {
 					tRequest(http.MethodDelete, "/foo/bar", nil).
 						Header("Content-Length", expect.ToEqual("0")).
 						Reply(tReply(reply.NoContent())))
-				f := File{Location: "/foo/bar"}
-				Ω(testClient.DeleteFile(&f)).ShouldNot(BeNil())
-				Ω(f).Should(Equal(File{Location: "/foo/bar"}))
+				f := Upload{Location: "/foo/bar"}
+				Ω(testClient.DeleteUpload(&f)).ShouldNot(BeNil())
+				Ω(f).Should(Equal(Upload{Location: "/foo/bar"}))
 			})
 		})
 		Context("error path", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
-					Ω(func() { _, _ = testClient.DeleteFile(nil) }).Should(Panic())
+					Ω(func() { _, _ = testClient.DeleteUpload(nil) }).Should(Panic())
 				})
 			})
 			Specify("no termination extension", func() {
-				f := File{Location: "/foo/bar"}
-				_, err := testClient.DeleteFile(&f)
+				f := Upload{Location: "/foo/bar"}
+				_, err := testClient.DeleteUpload(&f)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'termination' is required")),
 				))
@@ -448,47 +448,47 @@ var _ = Describe("Client", func() {
 					func(status int, expectErr error) {
 						testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "termination")
 						srvMock.AddMocks(tRequest(http.MethodDelete, "/foo/bar", nil).Reply(reply.Status(status)))
-						f := File{Location: "/foo/bar"}
+						f := Upload{Location: "/foo/bar"}
 
-						resp, err := testClient.DeleteFile(&f)
+						resp, err := testClient.DeleteUpload(&f)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
-						Ω(f).Should(Equal(File{Location: "/foo/bar"}))
+						Ω(f).Should(Equal(Upload{Location: "/foo/bar"}))
 					},
-					Entry("413", http.StatusRequestEntityTooLarge, ErrFileTooLarge),
-					Entry("404", http.StatusNotFound, ErrFileDoesNotExist),
-					Entry("410", http.StatusGone, ErrFileDoesNotExist),
-					Entry("403", http.StatusForbidden, ErrFileDoesNotExist),
+					Entry("413", http.StatusRequestEntityTooLarge, ErrUploadTooLarge),
+					Entry("404", http.StatusNotFound, ErrUploadDoesNotExist),
+					Entry("410", http.StatusGone, ErrUploadDoesNotExist),
+					Entry("403", http.StatusForbidden, ErrUploadDoesNotExist),
 					Entry("400", http.StatusBadRequest, ErrUnexpectedResponse),
 					Entry("200", http.StatusOK, ErrUnexpectedResponse),
 				)
 			})
 		})
 	})
-	Context("ConcatenateFiles", func() {
+	Context("ConcatenateUploads", func() {
 		Context("happy path", func() {
 			BeforeEach(func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
 			})
-			When("upload several files, no metadata", func() {
+			When("send several uploads, no metadata", func() {
 				It("should make a request", func() {
 					eh := []string{"Upload-Length"}
 					srvMock.AddMocks(tRequest(http.MethodPost, "/", eh).
 						Header("Upload-Concat", expect.ToEqual("final")).
 						Reply(tReply(reply.Created()).Header("Location", "/foo/bar/baz")),
 					)
-					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					f := File{}
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+					f := Upload{}
 
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)).Should(Succeed())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.ConcatenateUploads(&f, []Upload{f1, f2}, nil)).Should(Succeed())
+					Ω(f).Should(Equal(Upload{
 						Location: "/foo/bar/baz",
 						Partial:  false,
 					}))
 				})
 			})
-			When("upload several files, with metadata", func() {
+			When("send several uploads, with metadata", func() {
 				It("should make a request", func() {
 					eh := []string{"Upload-Length"}
 					md := map[string]string{
@@ -501,12 +501,12 @@ var _ = Describe("Client", func() {
 						Header("Upload-Metadata", expect.ToEqual(mdEncoded)).
 						Reply(tReply(reply.Created()).Header("Location", "/foo/bar/baz")),
 					)
-					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					f := File{}
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+					f := Upload{}
 
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, md)).Should(Succeed())
-					Ω(f).Should(Equal(File{
+					Ω(testClient.ConcatenateUploads(&f, []Upload{f1, f2}, md)).Should(Succeed())
+					Ω(f).Should(Equal(Upload{
 						Location: "/foo/bar/baz",
 						Partial:  false,
 						Metadata: md,
@@ -518,37 +518,37 @@ var _ = Describe("Client", func() {
 			When("f is nil", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
-					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					Ω(func() { _, _ = testClient.ConcatenateFiles(nil, []File{f1, f2}, nil) }).Should(Panic())
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+					Ω(func() { _, _ = testClient.ConcatenateUploads(nil, []Upload{f1, f2}, nil) }).Should(Panic())
 				})
 			})
-			When("files list is empty", func() {
+			When("uploads list is empty", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
-					f := File{}
-					Ω(func() { _, _ = testClient.ConcatenateFiles(&f, nil, nil) }).Should(Panic())
-					Ω(f).Should(Equal(File{}))
+					f := Upload{}
+					Ω(func() { _, _ = testClient.ConcatenateUploads(&f, nil, nil) }).Should(Panic())
+					Ω(f).Should(Equal(Upload{}))
 				})
 			})
 			When("no concatenation extension", func() {
 				It("should return error", func() {
-					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					f := File{}
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)).Should(MatchError(ContainSubstring("server extension 'concatenation' is required")))
-					Ω(f).Should(Equal(File{}))
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+					f := Upload{}
+					Ω(testClient.ConcatenateUploads(&f, []Upload{f1, f2}, nil)).Should(MatchError(ContainSubstring("server extension 'concatenation' is required")))
+					Ω(f).Should(Equal(Upload{}))
 				})
 			})
-			When("some files are not partial", func() {
+			When("some uploads are not partial", func() {
 				It("should return error", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
-					f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-					f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: false}
-					f3 := File{Location: "/foo/baa", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-					f := File{}
-					Ω(testClient.ConcatenateFiles(&f, []File{f1, f2, f3}, nil)).Should(MatchError(ContainSubstring("file '/foo/baz' is not partial")))
-					Ω(f).Should(Equal(File{}))
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: false}
+					f3 := Upload{Location: "/foo/baa", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+					f := Upload{}
+					Ω(testClient.ConcatenateUploads(&f, []Upload{f1, f2, f3}, nil)).Should(MatchError(ContainSubstring("upload '/foo/baz' is not partial")))
+					Ω(f).Should(Equal(Upload{}))
 				})
 			})
 			When("http error or unexpected code", func() {
@@ -556,17 +556,17 @@ var _ = Describe("Client", func() {
 					func(status int, expectErr error) {
 						testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
 						srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).Reply(reply.Status(status)))
-						f1 := File{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
-						f2 := File{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
-						f := File{}
+						f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+						f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+						f := Upload{}
 
-						resp, err := testClient.ConcatenateFiles(&f, []File{f1, f2}, nil)
+						resp, err := testClient.ConcatenateUploads(&f, []Upload{f1, f2}, nil)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
-						Ω(f).Should(Equal(File{}))
+						Ω(f).Should(Equal(Upload{}))
 					},
-					Entry("404", http.StatusNotFound, ErrFileDoesNotExist),
-					Entry("410", http.StatusGone, ErrFileDoesNotExist),
+					Entry("404", http.StatusNotFound, ErrUploadDoesNotExist),
+					Entry("410", http.StatusGone, ErrUploadDoesNotExist),
 					Entry("403", http.StatusForbidden, ErrUnexpectedResponse),
 					Entry("400", http.StatusBadRequest, ErrUnexpectedResponse),
 					Entry("200", http.StatusOK, ErrUnexpectedResponse),
@@ -664,25 +664,25 @@ var _ = Describe("Client", func() {
 	})
 })
 
-func ExampleClient_CreateFile() {
-	u, err := url.Parse("http://example.com/files")
+func ExampleClient_CreateUpload() {
+	baseURL, err := url.Parse("http://example.com/files")
 	if err != nil {
 		panic(err)
 	}
-	cl := NewClient(http.DefaultClient, u)
+	cl := NewClient(http.DefaultClient, baseURL)
 	if _, err = cl.UpdateCapabilities(); err != nil {
 		panic(err)
 	}
 
-	f := File{}
+	u := Upload{}
 	// Create an upload with size 1024 bytes
-	if _, err = cl.CreateFile(&f, 1024, false, nil); err != nil {
+	if _, err = cl.CreateUpload(&u, 1024, false, nil); err != nil {
 		panic(err)
 	}
-	fmt.Printf("Location: %s", f.Location)
+	fmt.Printf("Location: %s", u.Location)
 }
 
-func ExampleClient_ConcatenateFiles() {
+func ExampleClient_ConcatenateUploads() {
 	u, err := url.Parse("http://example.com/files")
 	if err != nil {
 		panic(err)
@@ -698,31 +698,31 @@ func ExampleClient_ConcatenateFiles() {
 		if _, err := io.Copy(s, src); err != nil {
 			panic(err)
 		}
-		fmt.Println("Copying file completed")
+		fmt.Println("Copying upload completed")
 		wg.Done()
 	}
 	wg.Add(2)
 
 	// Create the 1st partial upload with size 1024 bytes
-	f1 := File{}
-	if _, err = cl.CreateFile(&f1, 1024, true, nil); err != nil {
+	u1 := Upload{}
+	if _, err = cl.CreateUpload(&u1, 1024, true, nil); err != nil {
 		panic(err)
 	}
-	go writeStream(NewUploadStream(cl, &f1), 1024)
+	go writeStream(NewUploadStream(cl, &u1), 1024)
 
 	// Create the 2nd partial upload with size 512 bytes
-	f2 := File{}
-	if _, err = cl.CreateFile(&f2, 512, true, nil); err != nil {
+	u2 := Upload{}
+	if _, err = cl.CreateUpload(&u2, 512, true, nil); err != nil {
 		panic(err)
 	}
-	go writeStream(NewUploadStream(cl, &f1), 512)
+	go writeStream(NewUploadStream(cl, &u1), 512)
 
 	wg.Wait()
 	// Concatenate partial uploads into a final upload
-	finalFile := File{}
-	if _, err = cl.ConcatenateFiles(&finalFile, []File{f1, f2}, nil); err != nil {
+	finalUpload := Upload{}
+	if _, err = cl.ConcatenateUploads(&finalUpload, []Upload{u1, u2}, nil); err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("Location: %s", finalFile.Location)
+	fmt.Printf("Location: %s", finalUpload.Location)
 }
