@@ -683,11 +683,11 @@ func ExampleClient_CreateUpload() {
 }
 
 func ExampleClient_ConcatenateUploads() {
-	u, err := url.Parse("http://example.com/files")
+	baseURL, err := url.Parse("http://example.com/files")
 	if err != nil {
 		panic(err)
 	}
-	cl := NewClient(http.DefaultClient, u)
+	cl := NewClient(http.DefaultClient, baseURL)
 	if _, err = cl.UpdateCapabilities(); err != nil {
 		panic(err)
 	}
@@ -719,10 +719,27 @@ func ExampleClient_ConcatenateUploads() {
 
 	wg.Wait()
 	// Concatenate partial uploads into a final upload
-	finalUpload := Upload{}
-	if _, err = cl.ConcatenateUploads(&finalUpload, []Upload{u1, u2}, nil); err != nil {
+	final := Upload{}
+	if _, err = cl.ConcatenateUploads(&final, []Upload{u1, u2}, nil); err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("Location: %s", finalUpload.Location)
+	fmt.Printf("Location: %s", final.Location)
+
+	// Get file info
+	u := Upload{RemoteOffset: OffsetUnknown}
+	for {
+		if _, err = cl.GetUpload(&u, final.Location); err != nil {
+			panic(err)
+		}
+		// When concatenation still in progress the offset can be either OffsetUnknown or a value less than size
+		// depending on server implementation
+		if u.RemoteOffset != OffsetUnknown && u.RemoteOffset == u.RemoteSize {
+			break
+		}
+		fmt.Println("Waiting concatenation to be finished")
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Printf("Offset: %d, Size: %d", u.RemoteOffset, u.RemoteSize)
 }

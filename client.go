@@ -65,8 +65,8 @@ func (c *Client) WithContext(ctx context.Context) *Client {
 // Returns http response from server (with closed body) and error (if any).
 //
 // For regular upload we fill in just a remote offset and set Partial flag. For final concatenated uploads we also
-// may set upload size (if server provided). Also, we may set remote offset to -1 for concatenated final uploads, if
-// concatenation still in progress on server side, and offset is unknown for the moment.
+// may set upload size (if server provided). Also, we may set remote offset to OffsetUnknown for concatenated final
+// uploads, if concatenation still in progress on server side.
 //
 // This method may return ErrUploadDoesNotExist error if upload with such location has not found on the server. If other
 // unexpected response has received from the server, method returns ErrUnexpectedResponse
@@ -104,7 +104,7 @@ func (c *Client) GetUpload(u *Upload, location string) (response *http.Response,
 				err = fmt.Errorf("lack of Upload-Offset required header in response: %w", ErrProtocol)
 				return
 			}
-			u.RemoteOffset = -1
+			u.RemoteOffset = OffsetUnknown
 		} else if uploadOffset != "" {
 			if u.RemoteOffset, err = strconv.ParseInt(uploadOffset, 10, 64); err != nil {
 				err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", uploadOffset, ErrProtocol)
