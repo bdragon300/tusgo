@@ -189,20 +189,23 @@ var _ = Describe("Client", func() {
 						RemoteSize:   1024,
 					}))
 				})
-				It("should get upload info without Upload-Offset header", func() {
-					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
-						Reply(tReply(reply.OK()).
-							Header("Upload-Concat", "final").
-							Header("Upload-Length", "1024")),
-					)
-					f := Upload{}
+				When("concatenated upload is still in progress", func() {
+					It("should get upload info with unknown offset", func() {
+						srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
+							Reply(tReply(reply.OK()).
+								Header("Upload-Concat", "final").
+								Header("Upload-Length", "1024")),
+						)
+						f := Upload{}
 
-					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
-					Ω(f).Should(Equal(Upload{
-						Location:   "/foo/bar",
-						Partial:    false,
-						RemoteSize: 1024,
-					}))
+						Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+						Ω(f).Should(Equal(Upload{
+							Location:     "/foo/bar",
+							Partial:      false,
+							RemoteSize:   1024,
+							RemoteOffset: OffsetUnknown,
+						}))
+					})
 				})
 			})
 		})
