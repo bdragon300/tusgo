@@ -429,19 +429,14 @@ var _ = Describe("Client", func() {
 						Header("Content-Length", expect.ToEqual("0")).
 						Reply(tReply(reply.NoContent())))
 				f := Upload{Location: "/foo/bar"}
-				Ω(testClient.DeleteUpload(&f)).ShouldNot(BeNil())
+				Ω(testClient.DeleteUpload(f)).ShouldNot(BeNil())
 				Ω(f).Should(Equal(Upload{Location: "/foo/bar"}))
 			})
 		})
 		Context("error path", func() {
-			When("f is nil", func() {
-				It("should panic", func() {
-					Ω(func() { _, _ = testClient.DeleteUpload(nil) }).Should(Panic())
-				})
-			})
 			Specify("no termination extension", func() {
 				f := Upload{Location: "/foo/bar"}
-				_, err := testClient.DeleteUpload(&f)
+				_, err := testClient.DeleteUpload(f)
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'termination' is required")),
 				))
@@ -453,7 +448,7 @@ var _ = Describe("Client", func() {
 						srvMock.AddMocks(tRequest(http.MethodDelete, "/foo/bar", nil).Reply(reply.Status(status)))
 						f := Upload{Location: "/foo/bar"}
 
-						resp, err := testClient.DeleteUpload(&f)
+						resp, err := testClient.DeleteUpload(f)
 						Ω(resp).ShouldNot(BeNil())
 						Ω(err).Should(MatchError(expectErr))
 						Ω(f).Should(Equal(Upload{Location: "/foo/bar"}))

@@ -238,10 +238,7 @@ func (c *Client) CreateUploadWithData(stream *UploadStream, data []byte) (upload
 // This method may return ErrUploadDoesNotExist error if such upload has not found on the server, ErrUnsupportedFeature if
 // the server doesn't support "termination" extension. If unexpected response has received from the
 // server, the method returns ErrUnexpectedResponse
-func (c *Client) DeleteUpload(u *Upload) (response *http.Response, err error) {
-	if u == nil {
-		panic("u is nil")
-	}
+func (c *Client) DeleteUpload(u Upload) (response *http.Response, err error) {
 	if err = c.ensureExtension("termination"); err != nil {
 		return
 	}
