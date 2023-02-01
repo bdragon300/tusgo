@@ -118,6 +118,11 @@ func (c *Client) GetUpload(u *Upload, location string) (response *http.Response,
 				return
 			}
 		}
+		if v := response.Header.Get("Upload-Metadata"); v != "" {
+			if u.Metadata, err = DecodeMetadata(v); err != nil {
+				err = fmt.Errorf("cannot parse Upload-Metadata header %q: %w", v, ErrProtocol) // TODO: keep err
+			}
+		}
 	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
 		err = ErrUploadDoesNotExist
 	default:
@@ -442,6 +447,24 @@ func EncodeMetadata(metadata map[string]string) (string, error) {
 	}
 
 	return strings.Join(encoded, ","), nil
+}
+
+// DecodeMetadata decodes metadata in Tus Upload-Metadata header format
+func DecodeMetadata(raw string) (map[string]string, error) {
+	res := make(map[string]string)
+	for _, item := range strings.Split(raw, ",") {
+		kv := strings.SplitN(raw, " ", 2)
+		if len(kv) <= 1 {
+			return res, fmt.Errorf("metadata item %q has bad format", item)
+		}
+		val, err := base64.StdEncoding.DecodeString(kv[1])
+		if err != nil {
+			return res, err
+		}
+		res[kv[0]] = string(val)
+	}
+
+	return res, nil
 }
 
 func newRequest(method, url string, body io.Reader, tusClient *Client, _ *http.Client, _ *ServerCapabilities) (*http.Request, error) {

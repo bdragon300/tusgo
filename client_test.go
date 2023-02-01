@@ -68,7 +68,7 @@ var _ = Describe("Client", func() {
 			ctx := context.Background()
 			res := testClient.WithContext(ctx)
 
-			Ω(&res).ShouldNot(BeIdenticalTo(&testClient))
+			Ω(res).ShouldNot(BeIdenticalTo(testClient))
 			Ω(res.ctx).Should(Equal(ctx))
 		})
 	})
@@ -151,6 +151,26 @@ var _ = Describe("Client", func() {
 					Ω(f).Should(Equal(Upload{
 						Location:     "/foo/bar",
 						RemoteOffset: 64,
+					}))
+				})
+			})
+			When("upload with metadata", func() {
+				It("should parse metadata", func() {
+					srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
+						Reply(tReply(reply.OK()).
+							Header("Upload-Offset", "64").
+							Header("Upload-Metadata", "key1 dmFsdWUx,key2 Jl4lJCIJ")),
+					)
+					f := Upload{}
+
+					Ω(testClient.GetUpload(&f, "/foo/bar")).ShouldNot(BeNil())
+					Ω(f).Should(Equal(Upload{
+						Location:     "/foo/bar",
+						RemoteOffset: 64,
+						Metadata: map[string]string{
+							"key1": "value1",
+							"key2": "&^%$\"\t",
+						},
 					}))
 				})
 			})
@@ -680,6 +700,9 @@ func ExampleClient_CreateUpload() {
 	fmt.Printf("Location: %s", u.Location)
 }
 
+func ExampleClient_CreateUpload_deferred_size() {
+}
+
 func ExampleClient_ConcatenateUploads() {
 	baseURL, err := url.Parse("http://example.com/files")
 	if err != nil {
@@ -692,6 +715,7 @@ func ExampleClient_ConcatenateUploads() {
 
 	wg := &sync.WaitGroup{}
 	writeStream := func(s *UploadStream, size int64) {
+		// TODO: copy loop
 		src := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), size)
 		if _, err := io.Copy(s, src); err != nil {
 			panic(err)
@@ -706,6 +730,7 @@ func ExampleClient_ConcatenateUploads() {
 	if _, err = cl.CreateUpload(&u1, 1024, true, nil); err != nil {
 		panic(err)
 	}
+	fmt.Printf("Location 1: %s\n", u1.Location)
 	go writeStream(NewUploadStream(cl, &u1), 1024)
 
 	// Create the 2nd partial upload with size 512 bytes
@@ -713,7 +738,8 @@ func ExampleClient_ConcatenateUploads() {
 	if _, err = cl.CreateUpload(&u2, 512, true, nil); err != nil {
 		panic(err)
 	}
-	go writeStream(NewUploadStream(cl, &u1), 512)
+	fmt.Printf("Location 2: %s\n", u2.Location)
+	go writeStream(NewUploadStream(cl, &u2), 512)
 
 	wg.Wait()
 	// Concatenate partial uploads into a final upload
@@ -722,7 +748,7 @@ func ExampleClient_ConcatenateUploads() {
 		panic(err)
 	}
 
-	fmt.Printf("Location: %s", final.Location)
+	fmt.Printf("Location Final: %s\n", final.Location)
 
 	// Get file info
 	u := Upload{RemoteOffset: OffsetUnknown}
