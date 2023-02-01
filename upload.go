@@ -15,19 +15,19 @@ const (
 )
 
 type Upload struct {
-	Metadata      map[string]string
-	RemoteSize    int64
 	Location      string
-	UploadExpired *time.Time
+	RemoteSize    int64
 	RemoteOffset  int64
+	Metadata      map[string]string
+	UploadExpired *time.Time
 	Partial       bool
 }
 
 func (f *Upload) Reset() {
-	f.Metadata = nil
-	f.RemoteSize = 0
 	f.Location = ""
-	f.UploadExpired = nil
+	f.RemoteSize = 0
 	f.RemoteOffset = 0
+	f.Metadata = nil
+	f.UploadExpired = nil
 	f.Partial = false
 }
