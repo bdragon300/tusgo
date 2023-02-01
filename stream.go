@@ -29,6 +29,8 @@ func NewUploadStream(client *Client, upload *Upload) *UploadStream {
 	}
 }
 
+const NoChunked = 0
+
 type UploadStream struct {
 	ChunkSize     int64
 	LastResponse  *http.Response
@@ -66,24 +68,25 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 	if err = us.validate(); err != nil {
 		return
 	}
-	uploaded := us.ChunkSize
 
 	if us.dirtyBuffer != nil {
 		if _, err = us.uploadWithDirtyBuffer(bytes.NewReader(us.dirtyBuffer)); err != nil {
 			return
 		}
-		if us.ChunkSize == -1 || int64(len(us.dirtyBuffer)) != us.ChunkSize {
+		if us.ChunkSize == NoChunked || int64(len(us.dirtyBuffer)) != us.ChunkSize {
 			us.dirtyBuffer = nil
 		}
 	}
-	if us.ChunkSize != -1 && us.dirtyBuffer == nil {
+	if us.ChunkSize != NoChunked && us.dirtyBuffer == nil {
 		us.dirtyBuffer = make([]byte, us.ChunkSize)
 	}
 
+	uploaded := us.ChunkSize
 	for uploaded == us.ChunkSize {
 		if uploaded, err = us.uploadWithDirtyBuffer(r); err != nil {
 			return
 		}
+		n += uploaded
 	}
 	us.dirtyBuffer = nil // Mark stream as clean if the whole data has been uploaded successfully
 	return
@@ -97,17 +100,17 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 		us.dirtyBuffer = make([]byte, us.ChunkSize)
 		defer func() { us.dirtyBuffer = nil }() // Always mark stream as clean, since p is seekable
 	}
-	uploaded := us.ChunkSize
 	var rd io.Reader = bytes.NewReader(p)
 
+	uploaded := us.ChunkSize
 	for uploaded == us.ChunkSize {
-		if us.ChunkSize != -1 {
-			rd = io.LimitReader(rd, us.ChunkSize)
-		}
 		if uploaded, err = us.uploadWithDirtyBuffer(rd); err != nil {
 			return
 		}
 		n += int(uploaded)
+	}
+	if n != len(p) && err == nil {
+		err = io.ErrShortWrite
 	}
 	return
 }
@@ -122,21 +125,21 @@ func (us *UploadStream) Sync() (response *http.Response, err error) {
 }
 
 func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64, offset int64, response *http.Response, err error) {
+	const unknownSize int64 = -1
 	if err = us.validate(); err != nil {
 		return
 	}
 	offset = us.upload.RemoteOffset
-	bytesToUpload := int64(-1)
+	bytesToUpload := unknownSize
 	if buf != nil {
 		bytesToUpload = int64(len(buf))
-	}
-
-	remoteBytesLeft := us.upload.RemoteSize - offset
-	if bytesToUpload > remoteBytesLeft {
-		bytesToUpload = remoteBytesLeft
-	}
-	if bytesToUpload == 0 {
-		return
+		remoteBytesLeft := us.upload.RemoteSize - offset
+		if bytesToUpload > remoteBytesLeft {
+			bytesToUpload = remoteBytesLeft
+		}
+		if bytesToUpload == 0 {
+			return // Return early before creating a request
+		}
 	}
 
 	var loc *url.URL
@@ -182,7 +185,9 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		}
 	}
 	req.Body = io.NopCloser(data)
-	req.Header.Set("Content-Length", strconv.FormatInt(bytesToUpload, 10))
+	if bytesToUpload != unknownSize {
+		req.Header.Set("Content-Length", strconv.FormatInt(bytesToUpload, 10))
+	}
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
 	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
 
@@ -200,7 +205,7 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 
 	switch response.StatusCode {
 	case http.StatusNoContent:
-		bytesUploaded = bytesToUpload
+		bytesUploaded = req.ContentLength
 		if offset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", response.Header.Get("Upload-Offset"), ErrProtocol)
 			return
@@ -273,7 +278,7 @@ func (us *UploadStream) Reset() {
 
 func (us *UploadStream) validate() error {
 	if us.upload.RemoteSize == SizeUnknown {
-		panic("upload with unknown size")
+		panic("upload must have size before start the uploading")
 	}
 	if us.upload.RemoteSize < 0 {
 		panic(fmt.Sprintf("upload size is negative %d", us.upload.RemoteSize))
@@ -288,20 +293,19 @@ func (us *UploadStream) validate() error {
 			return err
 		}
 	}
-	if us.ChunkSize <= 0 && us.ChunkSize != -1 {
-		panic("ChunkSize must be either a positive number or -1")
+	if us.ChunkSize < 0 && us.ChunkSize != NoChunked {
+		panic("ChunkSize must be either a positive number or NoChunked")
 	}
 	return nil
 }
 
 func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err error) {
 	var offset int64
-	if _, offset, us.LastResponse, err = us.Upload(r, us.dirtyBuffer); err != nil {
+	if uploaded, offset, us.LastResponse, err = us.Upload(r, us.dirtyBuffer); err != nil {
 		return
 	}
 	if offset <= us.upload.RemoteOffset {
 		err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.upload.RemoteOffset, offset, ErrProtocol)
-		return
 	}
 	us.upload.RemoteOffset = offset
 	return
