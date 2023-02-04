@@ -33,17 +33,28 @@ func NewClient(client *http.Client, baseURL *url.URL) *Client {
 	return c
 }
 
-type GetRequestFunc func(method, url string, body io.Reader, tusClient *Client, httpClient *http.Client) (*http.Request, error)
-
-// Client implements method that manage uploads and retrieve server information. To send data to server use UploadStream.
+// Client contains methods to manipulate server uploads except for uploading data. This includes creating, deleting,
+// getting the information, making concatenated uploads from partial ones. For uploading the data please see UploadStream
+//
+// The following errors the methods may return:
+//
+//   - ErrProtocol -- unexpected condition detected in a successful server response
+//
+//   - ErrUnsupportedFeature -- to do requested action we need the extension, that server was not advertised in capabilities
+//
+//   - ErrUploadTooLarge -- size of the requested upload more than server ready to accept. See ServerCapabilities.MaxSize
+//
+//   - ErrUploadDoesNotExist -- requested upload does not exist or access denied
+//
+//   - ErrUnexpectedResponse -- unexpected server response code
 type Client struct {
+	// BaseURL is base url the client making queries to. For example, "http://example.com/files"
 	BaseURL *url.URL
 
-	// TUS protocol version we're using. This value is sent in Tus-Resumable HTTP header. Default is "1.0.0"
+	// ProtocolVersion is TUS protocol version will be used in requests. Default is "1.0.0"
 	ProtocolVersion string
 
-	// Server capabilities and settings. The method UpdateCapabilities queries actual capabilities from a server
-	// and fills this variable
+	// Server capabilities and settings. Use UpdateCapabilities to query the capabilities from a server
 	Capabilities *ServerCapabilities
 
 	// GetRequest is a callback function that are called by the library to get a new request object
@@ -54,8 +65,9 @@ type Client struct {
 	ctx    context.Context
 }
 
-// WithContext returns a client copy with given context object assigned to it. If context assigned, it will be
-// used in every HTTP request further made by this client.
+type GetRequestFunc func(method, url string, body io.Reader, tusClient *Client, httpClient *http.Client) (*http.Request, error)
+
+// WithContext returns a client copy with given context object assigned to it
 func (c *Client) WithContext(ctx context.Context) *Client {
 	res := *c
 	res.ctx = ctx
@@ -240,7 +252,7 @@ func (c *Client) CreateUploadWithData(u *Upload, data []byte, remoteSize int64, 
 	u.Metadata = meta
 
 	rd := bytes.NewReader(data)
-	uploadedBytes, _, response, err = s.Upload(c.BaseURL.String(), rd, nil, headers)
+	uploadedBytes, _, response, err = s.doUpload(c.BaseURL.String(), rd, nil, headers)
 
 	return
 }
@@ -364,14 +376,14 @@ func (c *Client) ConcatenateStreams(final *Upload, streams []*UploadStream, meta
 				return nil, fmt.Errorf("stream #%d is not finished: %w", i, err)
 			}
 		}
-		uploads = append(uploads, *s.upload)
+		uploads = append(uploads, *s.Upload)
 	}
 
 	return c.ConcatenateUploads(final, uploads, meta)
 }
 
-// UpdateCapabilities gathers server capabilities and updates Capabilities variable. Returns http response from server
-// (with closed body) and error (if any).
+// UpdateCapabilities gathers server capabilities and updates Capabilities client variable. Returns http response
+// from server (with closed body) and error (if any).
 func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 	var req *http.Request
 	if req, err = c.GetRequest(http.MethodOptions, c.BaseURL.String(), nil, c, c.client); err != nil {

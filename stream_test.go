@@ -85,7 +85,7 @@ var _ = Describe("UploadStream", func() {
 	})
 	AfterEach(func() {
 		if srvMock != nil {
-			srvMock.AssertCalled(GinkgoT()) // TODO: check if it checks all sequentally responses and no extra calls was made
+			srvMock.AssertCalled(GinkgoT()) // TODO: check if it checks all sequentally responses and no extra calls were made
 			Ω(srvMock.Close()).Should(Succeed())
 		}
 	})
@@ -102,13 +102,13 @@ var _ = Describe("UploadStream", func() {
 					SetUploadSize:    false,
 					checksumHash:     nil,
 					checksumHashName: "",
-					upload:           u,
+					Upload:           u,
 					client:           testClient,
 					dirtyBuffer:      nil,
 					uploadMethod:     http.MethodPatch,
 					ctx:              testClient.ctx,
 				}))
-				Ω(s.upload).Should(BeIdenticalTo(u))
+				Ω(s.Upload).Should(BeIdenticalTo(u))
 			})
 		})
 		DescribeTable("ordinary upload data without interrupts or errors",

@@ -904,6 +904,7 @@ func ExampleClient_CreateUpload() {
 }
 
 func ExampleClient_CreateUpload_deferred_size() {
+	// TODO
 }
 
 func ExampleClient_ConcatenateUploads() {
