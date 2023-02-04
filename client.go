@@ -33,7 +33,7 @@ func NewClient(client *http.Client, baseURL *url.URL) *Client {
 	return c
 }
 
-type GetRequestFunc func(method, url string, body io.Reader, tusClient *Client, httpClient *http.Client, capabilities *ServerCapabilities) (*http.Request, error)
+type GetRequestFunc func(method, url string, body io.Reader, tusClient *Client, httpClient *http.Client) (*http.Request, error)
 
 // Client implements method that manage uploads and retrieve server information. To send data to server use UploadStream.
 type Client struct {
@@ -83,7 +83,7 @@ func (c *Client) GetUpload(u *Upload, location string) (response *http.Response,
 	ref := c.BaseURL.ResolveReference(loc).String()
 
 	var req *http.Request
-	if req, err = c.GetRequest(http.MethodHead, ref, nil, c, c.client, c.Capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodHead, ref, nil, c, c.client); err != nil {
 		return
 	}
 	if response, err = c.tusRequest(c.ctx, req); err != nil {
@@ -153,7 +153,7 @@ func (c *Client) CreateUpload(u *Upload, remoteSize int64, partial bool, meta ma
 	}
 
 	var req *http.Request
-	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client, c.Capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client); err != nil {
 		return
 	}
 
@@ -264,7 +264,7 @@ func (c *Client) DeleteUpload(u Upload) (response *http.Response, err error) {
 		return
 	}
 	ref := c.BaseURL.ResolveReference(loc).String()
-	if req, err = c.GetRequest(http.MethodDelete, ref, nil, c, c.client, c.Capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodDelete, ref, nil, c, c.client); err != nil {
 		return
 	}
 	if response, err = c.tusRequest(c.ctx, req); err != nil {
@@ -304,7 +304,7 @@ func (c *Client) ConcatenateUploads(final *Upload, partials []Upload, meta map[s
 	}
 
 	var req *http.Request
-	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client, c.Capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodPost, c.BaseURL.String(), nil, c, c.client); err != nil {
 		return
 	}
 
@@ -374,7 +374,7 @@ func (c *Client) ConcatenateStreams(final *Upload, streams []*UploadStream, meta
 // (with closed body) and error (if any).
 func (c *Client) UpdateCapabilities() (response *http.Response, err error) {
 	var req *http.Request
-	if req, err = c.GetRequest(http.MethodOptions, c.BaseURL.String(), nil, c, c.client, c.Capabilities); err != nil {
+	if req, err = c.GetRequest(http.MethodOptions, c.BaseURL.String(), nil, c, c.client); err != nil {
 		return
 	}
 	if response, err = c.tusRequest(c.ctx, req); err != nil {
@@ -477,6 +477,6 @@ func DecodeMetadata(raw string) (map[string]string, error) {
 	return res, nil
 }
 
-func newRequest(method, url string, body io.Reader, tusClient *Client, _ *http.Client, _ *ServerCapabilities) (*http.Request, error) {
+func newRequest(method, url string, body io.Reader, tusClient *Client, _ *http.Client) (*http.Request, error) {
 	return http.NewRequest(method, url, body)
 }

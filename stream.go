@@ -143,7 +143,7 @@ func (us *UploadStream) Upload(requestURL string, data io.Reader, buf []byte, ex
 	}
 
 	var req *http.Request
-	if req, err = us.client.GetRequest(us.uploadMethod, requestURL, nil, us.client, us.client.client, us.client.Capabilities); err != nil {
+	if req, err = us.client.GetRequest(us.uploadMethod, requestURL, nil, us.client, us.client.client); err != nil {
 		return
 	}
 
