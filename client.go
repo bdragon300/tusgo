@@ -1,6 +1,7 @@
 package tusgo
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -216,22 +217,31 @@ func (c *Client) CreateUpload(u *Upload, remoteSize int64, partial bool, meta ma
 //
 // This method may return ErrUnsupportedFeature if server doesn't support an extension. Also, it may return all errors
 // the UploadStream methods may return.
-func (c *Client) CreateUploadWithData(stream *UploadStream, data []byte) (uploadedBytes int, err error) {
-	// FIXME: where *Upload variable with info?
-	if stream == nil {
-		panic("stream is nil")
-	}
+func (c *Client) CreateUploadWithData(u *Upload, data []byte, remoteSize int64, partial bool, meta map[string]string) (uploadedBytes int64, response *http.Response, err error) {
 	if err = c.ensureExtension("creation-with-upload"); err != nil {
 		return
 	}
-	prevStream := *stream
-	stream.ChunkSize = int64(len(data)) // Data must be uploaded in one request
-	stream.uploadMethod = http.MethodPost
+	s := NewUploadStream(c, u)
+	s.ChunkSize = int64(len(data)) // Data must be uploaded in one request
+	s.uploadMethod = http.MethodPost
+	headers := map[string]string{"Upload-Length": strconv.Itoa(int(remoteSize))}
+	if partial {
+		headers["Upload-Concat"] = "partial"
+	}
+	if len(meta) > 0 {
+		var m string
+		if m, err = EncodeMetadata(meta); err != nil {
+			return
+		}
+		headers["Upload-Metadata"] = m
+	}
+	u.RemoteSize = remoteSize
+	u.Partial = partial
+	u.Metadata = meta
 
-	uploadedBytes, err = stream.Write(data)
+	rd := bytes.NewReader(data)
+	uploadedBytes, _, response, err = s.Upload(c.BaseURL.String(), rd, nil, headers)
 
-	stream.ChunkSize = prevStream.ChunkSize
-	stream.uploadMethod = prevStream.uploadMethod
 	return
 }
 

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -437,7 +438,140 @@ var _ = Describe("Client", func() {
 			})
 		})
 	})
-	PContext("CreateUploadWithData")
+	Context("CreateUploadWithData", func() {
+		Context("happy path", func() {
+			BeforeEach(func() {
+				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation", "creation-with-upload")
+			})
+			When("upload without metadata", func() {
+				DescribeTable("should upload data in one request",
+					func(dataLen int) {
+						d, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), int64(dataLen)))
+						srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+							Header("Content-Length", expect.ToEqual(strconv.Itoa(dataLen))).
+							Header("Upload-Length", expect.ToEqual("1024")).
+							Body(expect.ToEqual(d)).
+							Reply(tReply(reply.Created()).
+								Header("Location", "/foo/bar").
+								Header("Upload-Offset", strconv.Itoa(dataLen))),
+						)
+						u := Upload{}
+
+						bytes, resp, err := testClient.CreateUploadWithData(&u, d, 1024, false, nil)
+						Ω(bytes).Should(Equal(dataLen))
+						Ω(resp).ShouldNot(BeNil())
+						Ω(err).Should(Succeed())
+						Ω(u).Should(Equal(Upload{
+							RemoteSize:   1024,
+							Location:     "/foo/bar",
+							RemoteOffset: int64(dataLen),
+						}))
+					},
+					Entry("part of upload length", 512),
+					Entry("full upload length", 1024),
+				)
+			})
+			When("upload all data with metadata", func() {
+				It("should upload data in one request and add metadata", func() {
+					d, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 512))
+					mdEncoded := "key1 dmFsdWUx,key2 Jl4lJCIJ"
+					srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+						Header("Content-Length", expect.ToEqual("1024")).
+						Header("Upload-Length", expect.ToEqual("1024")).
+						Header("Upload-Metadata", expect.ToEqual(mdEncoded)).
+						Body(expect.ToEqual(d)).
+						Reply(tReply(reply.Created()).
+							Header("Location", "/foo/bar").
+							Header("Upload-Offset", "512")),
+					)
+					u := Upload{}
+					md := map[string]string{"key1": "value1", "key2": "&^%$\"\t"}
+
+					bytes, resp, err := testClient.CreateUploadWithData(&u, d, 1024, false, md)
+					Ω(bytes).Should(Equal(1024))
+					Ω(resp).ShouldNot(BeNil())
+					Ω(err).Should(Succeed())
+					Ω(u).Should(Equal(Upload{
+						RemoteSize:   1024,
+						Location:     "/foo/bar",
+						RemoteOffset: 512,
+						Metadata:     md,
+					}))
+				})
+			})
+			When("create partial upload and upload all data without metadata", func() {
+				It("should upload data in one request", func() {
+					d, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
+					srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+						Header("Content-Length", expect.ToEqual("1024")).
+						Header("Upload-Length", expect.ToEqual("1024")).
+						Header("Upload-Concat", expect.ToEqual("partial")).
+						Body(expect.ToEqual(d)).
+						Reply(tReply(reply.Created()).
+							Header("Location", "/foo/bar").
+							Header("Upload-Offset", "1024")),
+					)
+					u := Upload{}
+
+					bytes, resp, err := testClient.CreateUploadWithData(&u, d, 1024, true, nil)
+					Ω(bytes).Should(Equal(1024))
+					Ω(resp).ShouldNot(BeNil())
+					Ω(err).Should(Succeed())
+					Ω(u).Should(Equal(Upload{
+						RemoteSize:   1024,
+						Location:     "/foo/bar",
+						RemoteOffset: 1024,
+						Partial:      true,
+					}))
+				})
+			})
+		})
+		Context("error path", func() {
+			Specify("no 'creation-with-upload' extension", func() {
+				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation")
+				f := Upload{Location: "/foo/bar"}
+				bytes, resp, err := testClient.CreateUploadWithData(&f, make([]byte, 10), 1024, false, nil)
+				Ω(bytes).Should(Equal(0))
+				Ω(resp).Should(BeNil())
+				Ω(err).Should(And(
+					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'creation-with-upload' is required")),
+				))
+			})
+			DescribeTable("http errors handling",
+				func(expectStatus int, expectErr error) {
+					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "creation", "creation-with-upload")
+					d, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
+					srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+						Header("Content-Length", expect.ToEqual("1024")).
+						Header("Upload-Length", expect.ToEqual("1024")).
+						Header("Upload-Concat", expect.ToEqual("partial")).
+						Body(expect.ToEqual(d)).
+						Reply(tReply(reply.Status(expectStatus))),
+					)
+
+					u := Upload{}
+
+					bytes, resp, err := testClient.CreateUploadWithData(&u, d, 1024, true, nil)
+					Ω(bytes).Should(Equal(0))
+					Ω(resp.StatusCode).Should(Equal(expectStatus))
+					Ω(err).Should(MatchError(expectErr))
+					Ω(u).Should(Equal(Upload{
+						RemoteSize:   1024,
+						Location:     "/foo/bar",
+						RemoteOffset: 0,
+					}))
+				},
+				Entry("409", http.StatusConflict, ErrOffsetsNotSynced),
+				Entry("403", http.StatusForbidden, ErrCannotUpload),
+				Entry("410", http.StatusGone, ErrUploadDoesNotExist),
+				Entry("404", http.StatusNotFound, ErrUploadDoesNotExist),
+				Entry("413", http.StatusRequestEntityTooLarge, ErrUploadTooLarge),
+				Entry("460", 460, ErrUnexpectedResponse),
+				Entry("401", http.StatusUnauthorized, ErrUnexpectedResponse),
+				Entry("200", http.StatusOK, ErrUnexpectedResponse),
+			)
+		})
+	})
 	Context("DeleteUpload", func() {
 		Context("happy path", func() {
 			BeforeEach(func() {
@@ -533,7 +667,7 @@ var _ = Describe("Client", func() {
 			})
 		})
 		Context("error path", func() {
-			When("f is nil", func() {
+			When("final is nil", func() {
 				It("should panic", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
 					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
@@ -592,7 +726,76 @@ var _ = Describe("Client", func() {
 			})
 		})
 	})
-	PContext("ConcatenateStreams")
+	Context("ConcatenateStreams", func() {
+		Context("happy path", func() {
+			BeforeEach(func() {
+				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation", "concatenation-unfinished")
+			})
+			When("all streams are finished", func() {
+				srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+					Header("Upload-Concat", expect.ToEqual("final; /foo/bar /foo/baz")).
+					Reply(tReply(reply.Created()).Header("Location", "/foo/bar/baz")),
+				)
+				f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 256, Partial: true}
+				s1 := NewUploadStream(testClient, &f1)
+				f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 512, Partial: true}
+				s2 := NewUploadStream(testClient, &f2)
+				f := Upload{}
+
+				Ω(testClient.ConcatenateStreams(&f, []*UploadStream{s1, s2}, nil)).Should(Succeed())
+				Ω(f).Should(Equal(Upload{
+					Location: "/foo/bar/baz",
+					Partial:  false,
+				}))
+			})
+			When("some streams are not finished", func() {
+				srvMock.AddMocks(tRequest(http.MethodPost, "/", nil).
+					Header("Upload-Concat", expect.ToEqual("final; /foo/bar /foo/baz")).
+					Reply(tReply(reply.Created()).Header("Location", "/foo/bar/baz")),
+				)
+				f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 64, Partial: true}
+				s1 := NewUploadStream(testClient, &f1)
+				f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 128, Partial: true}
+				s2 := NewUploadStream(testClient, &f2)
+				f := Upload{}
+
+				Ω(testClient.ConcatenateStreams(&f, []*UploadStream{s1, s2}, nil)).Should(Succeed())
+				Ω(f).Should(Equal(Upload{
+					Location: "/foo/bar/baz",
+					Partial:  false,
+				}))
+			})
+		})
+		Context("error path", func() {
+			When("final is nil", func() {
+				It("should panic", func() {
+					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation", "concatenation-unfinished")
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 64, Partial: true}
+					s1 := NewUploadStream(testClient, &f1)
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 128, Partial: true}
+					s2 := NewUploadStream(testClient, &f2)
+					f := Upload{}
+					Ω(func() { _, _ = testClient.ConcatenateStreams(&f, []*UploadStream{s1, s2}, nil) }).Should(PanicWith(ContainSubstring("final is nil")))
+				})
+			})
+			When("some streams are not finished and no 'concatenation-unfinished' extension", func() {
+				It("should return error", func() {
+					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "concatenation")
+					f1 := Upload{Location: "/foo/bar", RemoteSize: 256, RemoteOffset: 64, Partial: true}
+					s1 := NewUploadStream(testClient, &f1)
+					f2 := Upload{Location: "/foo/baz", RemoteSize: 512, RemoteOffset: 128, Partial: true}
+					s2 := NewUploadStream(testClient, &f2)
+					f := Upload{}
+
+					resp, err := testClient.ConcatenateStreams(&f, []*UploadStream{s1, s2}, nil)
+					Ω(resp).Should(BeNil())
+					Ω(err).Should(And(
+						MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension 'concatenation-unfinished' is required")),
+					))
+				})
+			})
+		})
+	})
 	Context("UpdateCapabilities", func() {
 		Context("happy path", func() {
 			DescribeTable("should fill client capabilities",

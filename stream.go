@@ -124,7 +124,7 @@ func (us *UploadStream) Sync() (response *http.Response, err error) {
 	return
 }
 
-func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64, offset int64, response *http.Response, err error) {
+func (us *UploadStream) Upload(requestURL string, data io.Reader, buf []byte, extraHeaders map[string]string) (bytesUploaded int64, offset int64, response *http.Response, err error) {
 	const unknownSize int64 = -1
 	if err = us.validate(); err != nil {
 		return
@@ -142,14 +142,8 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 		}
 	}
 
-	var loc *url.URL
-	if loc, err = url.Parse(us.upload.Location); err != nil {
-		return
-	}
-	u := us.client.BaseURL.ResolveReference(loc).String()
-
 	var req *http.Request
-	if req, err = us.client.GetRequest(us.uploadMethod, u, nil, us.client, us.client.client, us.client.Capabilities); err != nil {
+	if req, err = us.client.GetRequest(us.uploadMethod, requestURL, nil, us.client, us.client.client, us.client.Capabilities); err != nil {
 		return
 	}
 
@@ -193,6 +187,12 @@ func (us *UploadStream) Upload(data io.Reader, buf []byte) (bytesUploaded int64,
 
 	if us.SetUploadSize && offset == 0 {
 		req.Header.Set("Upload-Length", strconv.FormatInt(us.upload.RemoteSize, 10))
+	}
+
+	if len(extraHeaders) > 0 {
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
 	}
 
 	if us.ctx != nil {
@@ -301,7 +301,14 @@ func (us *UploadStream) validate() error {
 
 func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err error) {
 	var offset int64
-	if uploaded, offset, us.LastResponse, err = us.Upload(r, us.dirtyBuffer); err != nil {
+	var loc *url.URL
+
+	if loc, err = url.Parse(us.upload.Location); err != nil {
+		return
+	}
+	u := us.client.BaseURL.ResolveReference(loc).String()
+
+	if uploaded, offset, us.LastResponse, err = us.Upload(u, r, us.dirtyBuffer, nil); err != nil {
 		return
 	}
 	if offset <= us.upload.RemoteOffset {
