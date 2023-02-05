@@ -22,12 +22,3 @@ type Upload struct {
 	UploadExpired *time.Time
 	Partial       bool
 }
-
-func (f *Upload) Reset() {
-	f.Location = ""
-	f.RemoteSize = 0
-	f.RemoteOffset = 0
-	f.Metadata = nil
-	f.UploadExpired = nil
-	f.Partial = false
-}

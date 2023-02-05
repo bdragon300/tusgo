@@ -1,7 +1,5 @@
 package tusgo
 
-import "github.com/bdragon300/tusgo/checksum"
-
 // ServerCapabilities contains features and limits of a Tus server. These features are exposed by a server itself
 // in OPTIONS endpoint and may be fetched by Client.UpdateCapabilities method.
 type ServerCapabilities struct {
@@ -17,7 +15,7 @@ type ServerCapabilities struct {
 	// Client.ProtocolVersion
 	ProtocolVersions []string
 
-	// Algorithms which server supports if it is able to verify uploads. For this feature a server must expose at
-	// least the "checksum" extension. See also checksum.Algorithms for list of hashes the tusgo can use.
-	ChecksumAlgorithms []checksum.Algorithm
+	// Algorithms which server supports. For this feature a server must expose at least the "checksum" extension.
+	// See also checksum.Algorithms for list of hashes the tusgo can use.
+	ChecksumAlgorithms []string
 }

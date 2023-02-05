@@ -69,13 +69,13 @@ func ExampleDeferTrailerReader() {
 		panic(err)
 	}
 
-	sha1b64 := checksum.NewHashBase64ReadWriter(crypto.SHA1.New())
-	body := io.TeeReader(strings.NewReader("Hello world!"), sha1b64)
+	b64hash := checksum.NewHashBase64ReadWriter(crypto.SHA1.New(), "sha1 ")
+	body := io.TeeReader(strings.NewReader("Hello world!"), b64hash)
 	trailers := map[string]io.Reader{"Checksum": body}
 	req.Body = io.NopCloser(checksum.NewDeferTrailerReader(body, trailers, req))
 
-	// Request will contain header "Trailer: Checksum"
-	// and an HTTP trailer "Checksum: 00hq6RNueFa8QiEjhep5cJRHWAI=" after request body
+	// Request will contain header "Trailer: sha1 Checksum"
+	// and an HTTP trailer "Checksum: sha1 00hq6RNueFa8QiEjhep5cJRHWAI=" after request body
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		panic(err)

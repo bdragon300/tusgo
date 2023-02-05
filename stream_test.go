@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bdragon300/tusgo/checksum"
 	"github.com/vitorsalgado/mocha/v3/expect"
 	"github.com/vitorsalgado/mocha/v3/params"
 	"github.com/vitorsalgado/mocha/v3/reply"
@@ -52,12 +51,11 @@ func (mtu *mockTusUploader) handler() func(r *http.Request, m reply.M, p params.
 func (mtu *mockTusUploader) makeRequest(method, location string, emptyHeaders []string) *mocha.MockBuilder {
 	b := mocha.Request().
 		URL(expect.URLPath(location)).Method(method).
-		Header("Location", expect.ToEqual(location)).
 		Header("Tus-Resumable", expect.ToEqual("1.0.0")).
 		Header("Content-Type", expect.ToEqual("application/offset+octet-stream")).
 		Header("Upload-Offset", expect.Func(func(v any, a expect.Args) (bool, error) {
 			num, e := strconv.Atoi(v.(string))
-			return num > 0, e
+			return num >= 0, e
 		})).
 		Header("Upload-Offset", expect.Func(func(v any, a expect.Args) (bool, error) {
 			num, e := strconv.Atoi(v.(string))
@@ -73,6 +71,7 @@ var _ = Describe("UploadStream", func() {
 	var testClient *Client
 	var testURL *url.URL
 	var srvMock *mocha.Mocha
+	var emptyHeaders []string
 
 	BeforeEach(func() {
 		srvMock = mocha.New(GinkgoT())
@@ -82,6 +81,7 @@ var _ = Describe("UploadStream", func() {
 		testClient.Capabilities = &ServerCapabilities{
 			ProtocolVersions: []string{"1.0.0"},
 		}
+		emptyHeaders = []string{"Upload-Concat", "Upload-Defer-Length", "Upload-Length", "Upload-Metadata", "Upload-Checksum"}
 	})
 	AfterEach(func() {
 		if srvMock != nil {
@@ -96,17 +96,17 @@ var _ = Describe("UploadStream", func() {
 				u := &Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, u)
 
-				Ω(s).Should(Equal(UploadStream{
-					ChunkSize:        2 * 1024 * 1024,
-					LastResponse:     nil,
-					SetUploadSize:    false,
-					checksumHash:     nil,
-					checksumHashName: "",
-					Upload:           u,
-					client:           testClient,
-					dirtyBuffer:      nil,
-					uploadMethod:     http.MethodPatch,
-					ctx:              testClient.ctx,
+				Ω(*s).Should(Equal(UploadStream{
+					ChunkSize:           2 * 1024 * 1024,
+					LastResponse:        nil,
+					SetUploadSize:       false,
+					checksumHash:        nil,
+					rawChecksumHashName: "",
+					Upload:              u,
+					client:              testClient,
+					dirtyBuffer:         nil,
+					uploadMethod:        http.MethodPatch,
+					ctx:                 testClient.ctx,
 				}))
 				Ω(s.Upload).Should(BeIdenticalTo(u))
 			})
@@ -117,30 +117,33 @@ var _ = Describe("UploadStream", func() {
 					tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 				}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, &u)
 				s.ChunkSize = 256
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-				Ω(copyCb(s, data)).Should(Equal(1024))
+				res, err := copyCb(s, data)
+				Ω(int(res)).Should(Equal(1024))
+				Ω(err).Should(Succeed())
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 				Ω(s.Dirty()).Should(BeFalse())
 				Ω(data).Should(Equal(up.buf.Bytes()))
 			},
-			Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+			Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 			Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 		)
+		// TODO: test for empty reader for ReadFrom
 		Context("upload data with http error in the middle", func() {
-			When("io.Copy", func() {
+			When("ReadFrom", func() {
 				It("retrying should work correctly", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), reply.InternalServerError(), tReply(reply.NoContent()), tReply(reply.NoContent()),
 					}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 					s := NewUploadStream(testClient, &u)
@@ -149,15 +152,15 @@ var _ = Describe("UploadStream", func() {
 					rd := bytes.NewReader(data)
 
 					// First attempt before error
-					copied, err := io.Copy(s, rd)
+					copied, err := s.ReadFrom(rd)
 					Ω(err).Should(MatchError(ErrUnexpectedResponse))
-					Ω(copied).Should(Equal(512))
+					Ω(copied).Should(BeEquivalentTo(768))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusInternalServerError))
 					Ω(s.Dirty()).Should(BeTrue())
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 512}))
 
 					// Second attempt after error
-					Ω(io.Copy(s, rd)).Should(Equal(512))
+					Ω(s.ReadFrom(rd)).Should(BeEquivalentTo(256))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
@@ -165,13 +168,14 @@ var _ = Describe("UploadStream", func() {
 					Ω(data).Should(Equal(up.buf.Bytes()))
 				})
 			})
+			// TODO: test when error on the last chunk and last chunk not aligned with chunksize (read/write not full dirty buffer)
 			When("Write method", func() {
 				It("retrying should work correctly", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), reply.InternalServerError(), tReply(reply.NoContent()), tReply(reply.NoContent()),
 					}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 					s := NewUploadStream(testClient, &u)
@@ -197,13 +201,13 @@ var _ = Describe("UploadStream", func() {
 			})
 		})
 		Context("data to be uploaded is oversize", func() {
-			When("io.Copy", func() {
+			When("ReadFrom", func() {
 				It("should read only bytes left at remote", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 					}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 256}
 					s := NewUploadStream(testClient, &u)
@@ -212,11 +216,11 @@ var _ = Describe("UploadStream", func() {
 					up.buf.Write(data[:256]) // Prefill, Upload-Offset now is 256
 					buf := bytes.NewBuffer(data[256:])
 
-					Ω(io.Copy(s, buf)).Should(Equal(768))
+					Ω(s.ReadFrom(buf)).Should(BeEquivalentTo(768))
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
-					Ω(data).Should(Equal(up.buf.Bytes()))
+					Ω(data[:1024]).Should(Equal(up.buf.Bytes()))
 					Ω(buf.Len()).Should(Equal(1024)) // 1024 bytes has not been read
 				})
 			})
@@ -226,7 +230,7 @@ var _ = Describe("UploadStream", func() {
 						tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 					}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 256}
 					s := NewUploadStream(testClient, &u)
@@ -240,7 +244,7 @@ var _ = Describe("UploadStream", func() {
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
-					Ω(data).Should(Equal(up.buf.Bytes()))
+					Ω(data[:1024]).Should(Equal(up.buf.Bytes()))
 				})
 			})
 		})
@@ -248,20 +252,20 @@ var _ = Describe("UploadStream", func() {
 			func(copyCb func(s *UploadStream, data []byte) (int64, error)) {
 				replies := []*reply.StdReply{tReply(reply.NoContent())}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, &u)
 				s.ChunkSize = NoChunked
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-				Ω(copyCb(s, data)).Should(Equal(1024))
+				Ω(copyCb(s, data)).Should(BeEquivalentTo(1024))
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 				Ω(s.Dirty()).Should(BeFalse())
 				Ω(data).Should(Equal(up.buf.Bytes()))
 			},
-			Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+			Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 			Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 		)
 		DescribeTable("upload data with defer length",
@@ -271,7 +275,9 @@ var _ = Describe("UploadStream", func() {
 					tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 				}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+				eh := []string{"Upload-Concat", "Upload-Defer-Length", "Upload-Metadata", "Upload-Checksum"}
+				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", eh).
+					ReplyFunction(up.handler()))
 
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, &u)
@@ -279,17 +285,17 @@ var _ = Describe("UploadStream", func() {
 				s.SetUploadSize = true
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-				Ω(copyCb(s, data)).Should(Equal(1024))
+				Ω(copyCb(s, data)).Should(BeEquivalentTo(1024))
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 				Ω(s.Dirty()).Should(BeFalse())
 				Ω(data).Should(Equal(up.buf.Bytes()))
 				Ω(up.requests[0].Header.Get("Upload-Length")).Should(Equal("1024"))
 				for _, v := range up.requests[1:] {
-					Ω(v.Header.Get("Upload-Length")).Should(Equal("1024"))
+					Ω(v.Header.Get("Upload-Length")).Should(BeEmpty())
 				}
 			},
-			Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+			Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 			Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 		)
 		Context("upload data by chunks with checksum", func() {
@@ -299,26 +305,27 @@ var _ = Describe("UploadStream", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 					}
+					eh := []string{"Upload-Concat", "Upload-Defer-Length", "Upload-Length", "Upload-Metadata"}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", eh).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
-					s := NewUploadStream(testClient, &u).WithChecksumAlgorithm(checksum.SHA1)
+					s := NewUploadStream(testClient, &u).WithChecksumAlgorithm("sha1")
 					s.ChunkSize = 256
 					data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-					Ω(copyCb(s, data)).Should(Equal(1024))
+					Ω(copyCb(s, data)).Should(BeEquivalentTo(1024))
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
 					Ω(data).Should(Equal(up.buf.Bytes()))
-					for i := 0; i < 1024; i += 256 {
-						sum := sha1.Sum(data[i : i+256])
+					for i, r := range up.requests {
+						sum := sha1.Sum(data[i*256 : i*256+256])
 						b64sum := base64.StdEncoding.EncodeToString(sum[:])
-						Ω(up.requests[i].Header.Get("Upload-Checksum")).Should(Equal(b64sum))
+						Ω(r.Header.Get("Upload-Checksum")).Should(Equal("sha1 " + b64sum))
 					}
 				},
-				Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+				Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 				Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 			)
 		})
@@ -328,23 +335,23 @@ var _ = Describe("UploadStream", func() {
 					testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "checksum", "checksum-trailer")
 					replies := []*reply.StdReply{tReply(reply.NoContent())}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
-					s := NewUploadStream(testClient, &u).WithChecksumAlgorithm(checksum.SHA1)
+					s := NewUploadStream(testClient, &u).WithChecksumAlgorithm("sha1")
 					s.ChunkSize = NoChunked
 					data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 					sum := sha1.Sum(data)
 					b64sum := base64.StdEncoding.EncodeToString(sum[:])
 
-					Ω(copyCb(s, data)).Should(Equal(1024))
+					Ω(copyCb(s, data)).Should(BeEquivalentTo(1024))
 					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
 					Ω(data).Should(Equal(up.buf.Bytes()))
-					Ω(up.requests[0].Trailer.Get("Upload-Checksum")).Should(Equal(b64sum))
+					Ω(up.requests[0].Trailer.Get("Upload-Checksum")).Should(Equal("sha1 " + b64sum))
 				},
-				Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+				Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 				Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 			)
 		})
@@ -355,37 +362,39 @@ var _ = Describe("UploadStream", func() {
 					rpl := tReply(reply.NoContent()).Header("Upload-Expires", "Wed, 25 Jun 2014 16:00:00 GMT")
 					replies := []*reply.StdReply{rpl, rpl, rpl, rpl}
 					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 					s := NewUploadStream(testClient, &u)
 					s.ChunkSize = 256
 					data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-					Ω(copyCb(s, data)).Should(Equal(1024))
+					Ω(copyCb(s, data)).Should(BeEquivalentTo(1024))
 					dt := time.Date(2014, 6, 25, 16, 0, 0, 0, time.UTC)
 					Ω(u).Should(Equal(Upload{
 						Location:      "/foo/bar",
 						RemoteSize:    1024,
 						RemoteOffset:  1024,
-						UploadExpired: &dt,
+						UploadExpired: u.UploadExpired,
 					}))
+					Ω(dt.Equal(*u.UploadExpired)).Should(BeTrue())
 					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 					Ω(s.Dirty()).Should(BeFalse())
 					Ω(data).Should(Equal(up.buf.Bytes()))
 				},
-				Entry("io.Copy", func(s *UploadStream, data []byte) (int64, error) { return io.Copy(s, bytes.NewReader(data)) }),
+				Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
 				Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
 			)
 		})
 		Context("Sync", func() {
 			It("should sync local offset with remote offset", func() {
-				srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", nil).
+				eh := []string{"Upload-Concat", "Upload-Defer-Length", "Upload-Length", "Upload-Metadata", "Upload-Checksum", "Upload-Offset"}
+				srvMock.AddMocks(tRequest(http.MethodHead, "/foo/bar", eh).
 					Reply(tReply(reply.Status(http.StatusOK)).Header("Upload-Offset", "512")),
 				)
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 8}
 				s := NewUploadStream(testClient, &u)
-				Ω(s.Sync()).Should(Succeed())
+				Ω(s.Sync()).ShouldNot(BeNil())
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 512}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusOK))
 				Ω(s.Dirty()).Should(BeFalse())
@@ -408,20 +417,20 @@ var _ = Describe("UploadStream", func() {
 			func(expectStatus int, expectErr error) {
 				replies := []*reply.StdReply{tReply(reply.Status(expectStatus))}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, &u)
 				s.ChunkSize = 256
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-				n, err := io.Copy(s, bytes.NewReader(data))
-				Ω(n).Should(Equal(0))
+				n, err := s.ReadFrom(bytes.NewReader(data))
+				Ω(n).Should(BeEquivalentTo(256))
 				Ω(err).Should(MatchError(expectErr))
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 0}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(expectStatus))
 				Ω(s.Dirty()).Should(BeTrue())
-				Ω(data).Should(BeEmpty())
+				Ω(up.buf.Len()).Should(Equal(0))
 			},
 			Entry("409", http.StatusConflict, ErrOffsetsNotSynced),
 			Entry("403", http.StatusForbidden, ErrCannotUpload),
@@ -437,20 +446,21 @@ var _ = Describe("UploadStream", func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "checksum")
 				replies := []*reply.StdReply{tReply(reply.Status(460))}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
-				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", nil).ReplyFunction(up.handler()))
+				eh := []string{"Upload-Concat", "Upload-Defer-Length", "Upload-Length", "Upload-Metadata"}
+				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", eh).ReplyFunction(up.handler()))
 
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
-				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm(checksum.SHA1)
+				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm("sha1")
 				s.ChunkSize = 256
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
 
-				n, err := io.Copy(s, bytes.NewReader(data))
-				Ω(n).Should(Equal(0))
+				n, err := s.ReadFrom(bytes.NewReader(data))
+				Ω(n).Should(BeEquivalentTo(256))
 				Ω(err).Should(MatchError(ErrChecksumMismatch))
 				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 0}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(460))
 				Ω(s.Dirty()).Should(BeTrue())
-				Ω(data).Should(BeEmpty())
+				Ω(up.buf.Len()).Should(Equal(0))
 			})
 		})
 		When("upload size is unknown", func() {
@@ -458,7 +468,7 @@ var _ = Describe("UploadStream", func() {
 				u := Upload{Location: "/foo/bar", RemoteSize: SizeUnknown}
 				s := NewUploadStream(testClient, &u)
 				rd := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024)
-				Ω(func() { _, _ = io.Copy(s, rd) }).Should(Panic())
+				Ω(func() { _, _ = s.ReadFrom(rd) }).Should(Panic())
 			})
 		})
 		When("upload with defer length, but creation-defer-length extension is not active", func() {
@@ -467,24 +477,24 @@ var _ = Describe("UploadStream", func() {
 				s := NewUploadStream(testClient, &u)
 				s.SetUploadSize = true
 				rd := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024)
-				n, err := io.Copy(s, rd)
-				Ω(n).Should(Equal(0))
+				n, err := s.ReadFrom(rd)
+				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					ContainSubstring("server extension 'creation-defer-length' is required"),
+					MatchError(ContainSubstring("server extension \"creation-defer-length\" is required")),
 				))
 			})
 		})
 		When("upload with checksum, but checksum extension is not active", func() {
 			It("should return error", func() {
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
-				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm(checksum.SHA1)
+				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm("sha1")
 				rd := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024)
-				n, err := io.Copy(s, rd)
-				Ω(n).Should(Equal(0))
+				n, err := s.ReadFrom(rd)
+				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					ContainSubstring("server extension 'checksum' is required"),
+					MatchError(ContainSubstring("server extension \"checksum\" is required")),
 				))
 			})
 		})
@@ -492,14 +502,14 @@ var _ = Describe("UploadStream", func() {
 			It("should return error", func() {
 				testClient.Capabilities.Extensions = append(testClient.Capabilities.Extensions, "checksum")
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
-				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm(checksum.SHA1)
+				s := NewUploadStream(testClient, &u).WithChecksumAlgorithm("sha1")
 				s.ChunkSize = NoChunked
 				rd := io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024)
-				n, err := io.Copy(s, rd)
-				Ω(n).Should(Equal(0))
+				n, err := s.ReadFrom(rd)
+				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					ContainSubstring("server extension 'checksum-trailer' is required"),
+					MatchError(ContainSubstring("server extension \"checksum-trailer\" is required")),
 				))
 			})
 		})

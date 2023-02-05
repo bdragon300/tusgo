@@ -34,6 +34,7 @@ func NewUploadStream(client *Client, upload *Upload) *UploadStream {
 // NoChunked assigned to UploadStream.ChunkSize makes the uploading process not to use chunking
 const NoChunked = 0 // TODO: example
 // TODO: remote ginkgo/gomega from go.mod
+// TODO: mention Upload ownership in docs below
 
 // UploadStream is write-only stream with TUS requests as underlying implementation. During creation, the UploadStream
 // receives a pointer to Upload object, where it holds the current server offset to write data to. This offset is
@@ -90,13 +91,13 @@ type UploadStream struct {
 	SetUploadSize bool // TODO: example
 	// TODO: example when RemoteOffset > 0
 
-	checksumHash     hash.Hash
-	checksumHashName checksum.Algorithm
-	Upload           *Upload
-	client           *Client
-	dirtyBuffer      []byte
-	uploadMethod     string
-	ctx              context.Context
+	checksumHash        hash.Hash
+	rawChecksumHashName string
+	Upload              *Upload
+	client              *Client
+	dirtyBuffer         []byte
+	uploadMethod        string
+	ctx                 context.Context
 }
 
 // WithContext assigns a given context to the copy of stream and returns it
@@ -109,15 +110,20 @@ func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
 }
 
 // WithChecksumAlgorithm sets the checksum algorithm to the copy of stream and returns it
-func (us *UploadStream) WithChecksumAlgorithm(name checksum.Algorithm) *UploadStream {
+func (us *UploadStream) WithChecksumAlgorithm(name string) *UploadStream {
 	// TODO: example with checksum
 	res := *us
 	res.LastResponse = nil
 	res.dirtyBuffer = nil
 	// TODO: check if server support this algo?
-	f := checksum.Algorithms[name] // Get algorithm by name from list of known algorithms
-	res.checksumHash = f()
-	res.checksumHashName = name
+	if alg, ok := checksum.GetAlgorithm(name); !ok {
+		panic(fmt.Sprintf("checksum algorithm %q does not supported", name))
+	} else {
+		f := checksum.Algorithms[alg]
+		res.checksumHash = f()
+	}
+	res.rawChecksumHashName = name
+
 	return &res
 }
 
@@ -154,14 +160,14 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 	}
 
 	uploaded := us.ChunkSize
+	counterRd := &counterReader{Rd: r}
 	for uploaded == us.ChunkSize {
-		if uploaded, err = us.uploadWithDirtyBuffer(r); err != nil {
-			return
+		if uploaded, err = us.uploadWithDirtyBuffer(counterRd); err != nil {
+			return counterRd.BytesRead, err
 		}
-		n += uploaded
 	}
 	us.dirtyBuffer = nil // Mark stream as clean if the whole data has been uploaded successfully
-	return
+	return counterRd.BytesRead, err
 }
 
 // Write uploads a bytes starting from offset Upload.RemoteOffset. The Upload.RemoteOffset is continuously
@@ -176,7 +182,7 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 // in this case, so the stream never becomes "dirty". Also, if checksum feature is used in this case, we put the hash
 // to the HTTP trailer, so the "checksum-trailer" server extension is required.
 //
-// If the bytes to be uploaded doesn't fit to space left in the upload, we upload the data we can and return io.ErrShortBuffer.
+// If the bytes to be uploaded doesn't fit to space left in the upload, we upload the data we can and return io.ErrShortWrite.
 func (us *UploadStream) Write(p []byte) (n int, err error) {
 	// TODO: example
 	// TODO: upload progress bar example
@@ -206,10 +212,10 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 // need to be called, when an ErrOffsetsNotSynced error was returned by another UploadStream method.
 func (us *UploadStream) Sync() (response *http.Response, err error) {
 	f := Upload{}
-	if response, err = us.client.GetUpload(&f, us.Upload.Location); err != nil {
-		return
+	if response, err = us.client.GetUpload(&f, us.Upload.Location); err == nil {
+		us.Upload.RemoteOffset = f.RemoteOffset
 	}
-	us.Upload.RemoteOffset = f.RemoteOffset
+	us.LastResponse = response
 	return
 }
 
@@ -258,32 +264,34 @@ func (us *UploadStream) ForceClean() {
 }
 
 func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err error) {
-	var offset int64
 	var loc *url.URL
+	var offset int64
+	var lastResponse *http.Response
 
-	if loc, err = url.Parse(us.Upload.Location); err != nil {
+	if loc, err = url.Parse(us.Upload.Location); err != nil { // TODO: called for every chunk, optimize
 		return
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
 
-	if uploaded, offset, us.LastResponse, err = us.doUpload(u, r, us.dirtyBuffer, nil); err != nil {
-		return
+	if uploaded, offset, lastResponse, err = us.doUpload(u, r, us.dirtyBuffer, nil); err == nil {
+		us.Upload.RemoteOffset = offset
 	}
-	if offset <= us.Upload.RemoteOffset {
-		err = fmt.Errorf("server offset %d did not move forward, new offset is %d: %w", us.Upload.RemoteOffset, offset, ErrProtocol)
+	if lastResponse != nil {
+		us.LastResponse = lastResponse
 	}
-	us.Upload.RemoteOffset = offset
 	return
 }
 
 func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, extraHeaders map[string]string) (bytesUploaded int64, offset int64, response *http.Response, err error) {
 	const unknownSize int64 = -1
+	chunking := buf != nil // Chunking enabled
+	offset = us.Upload.RemoteOffset
 	if err = us.validate(); err != nil {
 		return
 	}
-	offset = us.Upload.RemoteOffset
+
 	bytesToUpload := unknownSize
-	if buf != nil {
+	if chunking {
 		bytesToUpload = int64(len(buf))
 		remoteBytesLeft := us.Upload.RemoteSize - offset
 		if bytesToUpload > remoteBytesLeft {
@@ -294,45 +302,49 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 		}
 	}
 
+	// Prevent reading from `data` if error occurred in the following calls
+	if us.checksumHash != nil && !chunking {
+		if err = us.client.ensureExtension("checksum-trailer"); err != nil {
+			return
+		}
+	}
 	var req *http.Request
 	if req, err = us.client.GetRequest(us.uploadMethod, requestURL, nil, us.client, us.client.client); err != nil {
 		return
 	}
 
-	if buf != nil {
+	if chunking {
 		t, e := io.ReadAtLeast(data, buf, int(bytesToUpload))
 		switch e {
-		case io.ErrUnexpectedEOF:
-			bytesToUpload = int64(t) // Reader has ended early
-		case io.EOF:
-			return // Reader is empty
+		case io.ErrUnexpectedEOF: // Reader has ended early
+			bytesToUpload = int64(t)
+			buf = buf[:bytesToUpload]
+		case io.EOF: // Reader is empty
+			return
 		default:
 			if e != nil {
 				err = e
 				return
 			}
 		}
-		data = bytes.NewReader(buf[:bytesToUpload])
+		data = bytes.NewReader(buf)
 	}
 
 	if us.checksumHash != nil {
 		us.checksumHash.Reset()
-
-		if buf != nil {
-			sumBuf := make([]byte, 0)
-			us.checksumHash.Sum(sumBuf)
-			req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.checksumHashName, base64.StdEncoding.EncodeToString(sumBuf)))
+		if chunking {
+			us.checksumHash.Write(buf)
+			sum := us.checksumHash.Sum(make([]byte, 0))
+			req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.rawChecksumHashName, base64.StdEncoding.EncodeToString(sum)))
 		} else {
-			if err = us.client.ensureExtension("checksum-trailer"); err != nil {
-				return
-			}
-			trailers := map[string]io.Reader{"Upload-Checksum": checksum.NewHashBase64ReadWriter(us.checksumHash)}
+			trailers := map[string]io.Reader{"Upload-Checksum": checksum.NewHashBase64ReadWriter(us.checksumHash, us.rawChecksumHashName+" ")}
 			data = checksum.NewDeferTrailerReader(io.TeeReader(data, us.checksumHash), trailers, req)
 		}
 	}
+
 	req.Body = io.NopCloser(data)
 	if bytesToUpload != unknownSize {
-		req.Header.Set("Content-Length", strconv.FormatInt(bytesToUpload, 10))
+		req.ContentLength = bytesToUpload
 	}
 	req.Header.Set("Content-Type", "application/offset+octet-stream")
 	req.Header.Set("Upload-Offset", strconv.FormatInt(offset, 10))
@@ -343,7 +355,11 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 
 	if len(extraHeaders) > 0 {
 		for k, v := range extraHeaders {
-			req.Header.Set(k, v)
+			if v == "" {
+				req.Header.Del(k)
+			} else {
+				req.Header.Set(k, v)
+			}
 		}
 	}
 
@@ -356,11 +372,20 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 	defer response.Body.Close()
 
 	switch response.StatusCode {
+	case http.StatusCreated: // For "Creation With Upload" feature
+		if us.uploadMethod != http.MethodPost {
+			err = ErrUnexpectedResponse
+			return
+		}
+		fallthrough
 	case http.StatusNoContent:
-		bytesUploaded = req.ContentLength
 		if offset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
 			err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", response.Header.Get("Upload-Offset"), ErrProtocol)
 			return
+		}
+		bytesUploaded = offset - us.Upload.RemoteOffset
+		if bytesUploaded < 0 {
+			bytesUploaded = 0
 		}
 		if v := response.Header.Get("Upload-Expires"); v != "" {
 			var t time.Time

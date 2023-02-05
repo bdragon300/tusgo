@@ -39,28 +39,29 @@ var _ = Describe("HashBase64ReadWriter", func() {
 	var rd *checksum.HashBase64ReadWriter
 	var buf []byte
 	var expect []byte
-	expectBase64 := []byte("YXNkZg==")
+	expectValue := []byte("prefix YXNkZg==")
+	const testLen = 12
 
 	BeforeEach(func() {
-		rd = checksum.NewHashBase64ReadWriter(hashStub{"asdf"})
-		expect = make([]byte, 5)
+		rd = checksum.NewHashBase64ReadWriter(hashStub{"asdf"}, "prefix ")
+		expect = make([]byte, testLen)
 	})
 	Context("Read()", func() {
 		When("read some bytes", func() {
 			It("should fill buf without err", func() {
-				buf = make([]byte, 5)
-				copy(expect, expectBase64[:5])
-				Ω(rd.Read(buf)).Should(Equal(5))
+				buf = make([]byte, testLen)
+				copy(expect, expectValue[:testLen])
+				Ω(rd.Read(buf)).Should(Equal(testLen))
 				Ω(buf).Should(Equal(expect))
 			})
 		})
 		When("skip and read the rest", func() {
 			BeforeEach(func() {
-				buf = make([]byte, 5)
-				_, _ = io.CopyN(io.Discard, rd, 5)
+				buf = make([]byte, testLen)
+				_, _ = io.CopyN(io.Discard, rd, testLen)
 			})
 			It("should fill buf", func() {
-				copy(expect, expectBase64[5:])
+				copy(expect, expectValue[testLen:])
 				Ω(rd.Read(buf)).Should(Equal(3))
 				Ω(buf).Should(Equal(expect))
 			})
@@ -70,7 +71,7 @@ var _ = Describe("HashBase64ReadWriter", func() {
 					l, err := rd.Read(buf)
 					Ω(l).Should(Equal(0))
 					Ω(err).Should(MatchError(io.EOF))
-					Ω(buf).Should(Equal(make([]byte, 5)))
+					Ω(buf).Should(Equal(make([]byte, testLen)))
 				})
 			})
 		})
@@ -79,7 +80,7 @@ var _ = Describe("HashBase64ReadWriter", func() {
 
 func ExampleNewHashBase64ReadWriter() {
 	data := []byte("Hello world!")
-	rw := checksum.NewHashBase64ReadWriter(crypto.SHA1.New())
+	rw := checksum.NewHashBase64ReadWriter(crypto.SHA1.New(), "sha1 ")
 	if _, err := rw.Write(data); err != nil {
 		panic(err)
 	}
@@ -89,5 +90,5 @@ func ExampleNewHashBase64ReadWriter() {
 		panic(err)
 	}
 	fmt.Printf("%s\n", sum)
-	// Output: 00hq6RNueFa8QiEjhep5cJRHWAI=
+	// Output: sha1 00hq6RNueFa8QiEjhep5cJRHWAI=
 }
