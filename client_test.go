@@ -116,7 +116,7 @@ var _ = Describe("Client", func() {
 				_, err = testClient.tusRequest(context.Background(), req)
 				Ω(err).Should(And(
 					MatchError(ErrProtocol),
-					MatchError(ContainSubstring("request protocol version \"1.0.0\", server supported versions: \"1.0.1,0.9.0\"")),
+					MatchError(ContainSubstring("protocol error: request protocol version \"1.0.0\", server supported versions are \"1.0.1,0.9.0\"")),
 				))
 			})
 		})
@@ -377,7 +377,7 @@ var _ = Describe("Client", func() {
 				f := Upload{}
 				_, err := testClient.CreateUpload(&f, 1024, false, nil)
 				Ω(err).Should(And(
-					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension \"creation\" is required")),
+					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("unsupported feature: creation")),
 				))
 			})
 			Specify("no creation-defer-length extension and trying to create defer size upload", func() {
@@ -385,7 +385,7 @@ var _ = Describe("Client", func() {
 				f := Upload{}
 				_, err := testClient.CreateUpload(&f, SizeUnknown, false, nil)
 				Ω(err).Should(And(
-					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension \"creation-defer-length\" is required")),
+					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("unsupported feature: creation-defer-length")),
 				))
 			})
 			When("upload size is negative", func() {
@@ -535,7 +535,7 @@ var _ = Describe("Client", func() {
 				Ω(bytes).Should(BeEquivalentTo(0))
 				Ω(resp).Should(BeNil())
 				Ω(err).Should(And(
-					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension \"creation-with-upload\" is required")),
+					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("unsupported feature: creation-with-upload")),
 				))
 			})
 			DescribeTable("http errors handling",
@@ -590,7 +590,7 @@ var _ = Describe("Client", func() {
 				f := Upload{Location: "/foo/bar"}
 				_, err := testClient.DeleteUpload(f)
 				Ω(err).Should(And(
-					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension \"termination\" is required")),
+					MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("unsupported feature: termination")),
 				))
 			})
 			When("http error or unexpected code", func() {
@@ -690,7 +690,7 @@ var _ = Describe("Client", func() {
 					f := Upload{}
 					resp, err := testClient.ConcatenateUploads(&f, []Upload{f1, f2}, nil)
 					Ω(resp).Should(BeNil())
-					Ω(err).Should(MatchError(ContainSubstring("server extension \"concatenation\" is required")))
+					Ω(err).Should(MatchError(ContainSubstring("unsupported feature: concatenation")))
 					Ω(f).Should(Equal(Upload{}))
 				})
 			})
@@ -799,7 +799,7 @@ var _ = Describe("Client", func() {
 					resp, err := testClient.ConcatenateStreams(&f, []*UploadStream{s1, s2}, nil)
 					Ω(resp).Should(BeNil())
 					Ω(err).Should(And(
-						MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("server extension \"concatenation-unfinished\" is required")),
+						MatchError(ErrUnsupportedFeature), MatchError(ContainSubstring("unsupported feature: concatenation-unfinished")),
 					))
 				})
 			})

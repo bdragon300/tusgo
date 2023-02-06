@@ -385,7 +385,7 @@ func (us *UploadStream) uploadChunkImpl(requestURL string, data io.Reader, extra
 		fallthrough
 	case http.StatusNoContent:
 		if offset, err = strconv.ParseInt(response.Header.Get("Upload-Offset"), 10, 64); err != nil {
-			err = fmt.Errorf("cannot parse Upload-Offset header %q: %w", response.Header.Get("Upload-Offset"), ErrProtocol)
+			err = ErrProtocol.WithErr(fmt.Errorf("cannot parse Upload-Offset header %q: %w", response.Header.Get("Upload-Offset"), err))
 			return
 		}
 		bytesUploaded = offset - us.Upload.RemoteOffset
@@ -395,22 +395,22 @@ func (us *UploadStream) uploadChunkImpl(requestURL string, data io.Reader, extra
 		if v := response.Header.Get("Upload-Expires"); v != "" {
 			var t time.Time
 			if t, err = time.Parse(time.RFC1123, v); err != nil {
-				err = fmt.Errorf("cannot parse Upload-Expires RFC1123 header %q: %w", v, ErrProtocol)
+				err = ErrProtocol.WithErr(fmt.Errorf("cannot parse Upload-Expires RFC1123 header %q: %w", v, err))
 				return
 			}
 			us.Upload.UploadExpired = &t
 		}
 	case http.StatusConflict:
-		err = ErrOffsetsNotSynced
+		err = ErrOffsetsNotSynced.WithResponse(response)
 	case http.StatusForbidden:
-		err = ErrCannotUpload
+		err = ErrCannotUpload.WithResponse(response)
 	case http.StatusNotFound, http.StatusGone:
-		err = ErrUploadDoesNotExist
+		err = ErrUploadDoesNotExist.WithResponse(response)
 	case http.StatusRequestEntityTooLarge:
-		err = ErrUploadTooLarge
+		err = ErrUploadTooLarge.WithResponse(response)
 	case 460: // Non-standard HTTP code '460 Checksum Mismatch'
 		if us.checksumHash != nil {
-			err = ErrChecksumMismatch
+			err = ErrChecksumMismatch.WithResponse(response)
 			return
 		}
 		fallthrough

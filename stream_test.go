@@ -525,7 +525,7 @@ var _ = Describe("UploadStream", func() {
 				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					MatchError(ContainSubstring("server extension \"creation-defer-length\" is required")),
+					MatchError(ContainSubstring("unsupported feature: creation-defer-length")),
 				))
 			})
 		})
@@ -538,7 +538,7 @@ var _ = Describe("UploadStream", func() {
 				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					MatchError(ContainSubstring("server extension \"checksum\" is required")),
+					MatchError(ContainSubstring("unsupported feature: checksum")),
 				))
 			})
 		})
@@ -553,7 +553,7 @@ var _ = Describe("UploadStream", func() {
 				Ω(n).Should(BeEquivalentTo(0))
 				Ω(err).Should(And(
 					MatchError(ErrUnsupportedFeature),
-					MatchError(ContainSubstring("server extension \"checksum-trailer\" is required")),
+					MatchError(ContainSubstring("unsupported feature: checksum-trailer")),
 				))
 			})
 		})
