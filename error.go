@@ -23,7 +23,7 @@ func (te TusError) Unwrap() error {
 
 func (te TusError) Is(e error) bool {
 	v, ok := e.(TusError)
-	return ok && v.msg == te.msg
+	return ok && v.msg == te.msg || errors.Is(te.inner, e)
 }
 
 func (te TusError) WithErr(err error) TusError {
