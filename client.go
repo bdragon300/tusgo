@@ -253,7 +253,8 @@ func (c *Client) CreateUploadWithData(u *Upload, data []byte, remoteSize int64, 
 	u2.Metadata = meta
 
 	rd := bytes.NewReader(data)
-	uploadedBytes, _, response, err = s.doUpload(c.BaseURL.String(), rd, data, headers)
+	s.setupDirtyBuffer()
+	uploadedBytes, _, response, err = s.uploadChunkImpl(c.BaseURL.String(), rd, headers) // Upload in one request
 	if err == nil {
 		u2.Location = response.Header.Get("Location")
 		u2.RemoteOffset = uploadedBytes

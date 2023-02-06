@@ -34,11 +34,11 @@ func NewUploadStream(client *Client, upload *Upload) *UploadStream {
 // NoChunked assigned to UploadStream.ChunkSize makes the uploading process not to use chunking
 const NoChunked = 0 // TODO: example
 // TODO: remote ginkgo/gomega from go.mod
-// TODO: mention Upload ownership in docs below
 
 // UploadStream is write-only stream with TUS requests as underlying implementation. During creation, the UploadStream
 // receives a pointer to Upload object, where it holds the current server offset to write data to. This offset is
-// continuously updated during uploading data to the server.
+// continuously updated during uploading data to the server. Note, that stream takes ownership of upload, so the upload
+// available for read only.
 //
 // By default, we upload data in chunks, which size is defined in ChunkSize field. To disable chunking, set it to
 // NoChunked -- dirty buffer will not be used, and the data will be written to the request body directly.
@@ -148,23 +148,15 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 	}
 
 	if us.dirtyBuffer != nil {
-		if _, err = us.uploadWithDirtyBuffer(bytes.NewReader(us.dirtyBuffer)); err != nil {
+		if _, err = us.uploadChunked(bytes.NewReader(us.dirtyBuffer)); err != nil {
 			return
 		}
-		if us.ChunkSize == NoChunked || int64(len(us.dirtyBuffer)) != us.ChunkSize {
-			us.dirtyBuffer = nil
-		}
 	}
-	if us.ChunkSize != NoChunked && us.dirtyBuffer == nil {
-		us.dirtyBuffer = make([]byte, us.ChunkSize)
-	}
+	us.setupDirtyBuffer()
 
-	uploaded := us.ChunkSize
 	counterRd := &counterReader{Rd: r}
-	for uploaded == us.ChunkSize {
-		if uploaded, err = us.uploadWithDirtyBuffer(counterRd); err != nil {
-			return counterRd.BytesRead, err
-		}
+	if _, err = us.uploadChunked(counterRd); err != nil {
+		return counterRd.BytesRead, err
 	}
 	us.dirtyBuffer = nil // Mark stream as clean if the whole data has been uploaded successfully
 	return counterRd.BytesRead, err
@@ -189,23 +181,17 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	if err = us.validate(); err != nil {
 		return
 	}
-	if us.ChunkSize > 0 {
-		us.dirtyBuffer = make([]byte, us.ChunkSize)
-		defer func() { us.dirtyBuffer = nil }() // Always mark stream as clean, since p is seekable
-	}
+	us.setupDirtyBuffer()
+	defer func() { us.dirtyBuffer = nil }() // Always mark stream as clean, since p is seekable
 	var rd io.Reader = bytes.NewReader(p)
 
-	uploaded := us.ChunkSize
-	for uploaded == us.ChunkSize {
-		if uploaded, err = us.uploadWithDirtyBuffer(rd); err != nil {
-			return
+	var uploaded int64
+	if uploaded, err = us.uploadChunked(rd); err == nil {
+		if uploaded != int64(len(p)) {
+			err = io.ErrShortWrite
 		}
-		n += int(uploaded)
 	}
-	if n != len(p) && err == nil {
-		err = io.ErrShortWrite
-	}
-	return
+	return int(uploaded), err
 }
 
 // Sync method adjusts the Upload.RemoteOffset value if it does not sync with server offset. Usually this method
@@ -263,28 +249,44 @@ func (us *UploadStream) ForceClean() {
 	us.dirtyBuffer = nil
 }
 
-func (us *UploadStream) uploadWithDirtyBuffer(r io.Reader) (uploaded int64, err error) {
+func (us *UploadStream) uploadChunked(r io.Reader) (uploadedBytes int64, err error) {
 	var loc *url.URL
 	var offset int64
 	var lastResponse *http.Response
 
-	if loc, err = url.Parse(us.Upload.Location); err != nil { // TODO: called for every chunk, optimize
+	if loc, err = url.Parse(us.Upload.Location); err != nil {
 		return
 	}
 	u := us.client.BaseURL.ResolveReference(loc).String()
 
-	if uploaded, offset, lastResponse, err = us.doUpload(u, r, us.dirtyBuffer, nil); err == nil {
+	uploaded := us.ChunkSize
+	for uploaded == us.ChunkSize {
+		uploaded, offset, lastResponse, err = us.uploadChunkImpl(u, r, nil)
+		if lastResponse != nil {
+			us.LastResponse = lastResponse
+		}
+		if err != nil {
+			return
+		}
 		us.Upload.RemoteOffset = offset
+		uploadedBytes += uploaded
 	}
-	if lastResponse != nil {
-		us.LastResponse = lastResponse
-	}
+
 	return
 }
 
-func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, extraHeaders map[string]string) (bytesUploaded int64, offset int64, response *http.Response, err error) {
+func (us *UploadStream) setupDirtyBuffer() {
+	if int64(len(us.dirtyBuffer)) != us.ChunkSize {
+		us.dirtyBuffer = nil
+	}
+	if len(us.dirtyBuffer) == 0 && us.ChunkSize != NoChunked {
+		us.dirtyBuffer = make([]byte, us.ChunkSize)
+	}
+}
+
+func (us *UploadStream) uploadChunkImpl(requestURL string, data io.Reader, extraHeaders map[string]string) (bytesUploaded int64, offset int64, response *http.Response, err error) {
 	const unknownSize int64 = -1
-	chunking := buf != nil // Chunking enabled
+	chunking := us.ChunkSize != NoChunked // Chunking enabled
 	offset = us.Upload.RemoteOffset
 	if err = us.validate(); err != nil {
 		return
@@ -292,7 +294,10 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 
 	bytesToUpload := unknownSize
 	if chunking {
-		bytesToUpload = int64(len(buf))
+		if int64(len(us.dirtyBuffer)) > us.ChunkSize {
+			panic("programming error: dirty buffer is larger than ChunkSize")
+		}
+		bytesToUpload = int64(len(us.dirtyBuffer))
 		remoteBytesLeft := us.Upload.RemoteSize - offset
 		if bytesToUpload > remoteBytesLeft {
 			bytesToUpload = remoteBytesLeft
@@ -314,11 +319,11 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 	}
 
 	if chunking {
-		t, e := io.ReadAtLeast(data, buf, int(bytesToUpload))
+		t, e := io.ReadAtLeast(data, us.dirtyBuffer, int(bytesToUpload))
 		switch e {
 		case io.ErrUnexpectedEOF: // Reader has ended early
 			bytesToUpload = int64(t)
-			buf = buf[:bytesToUpload]
+			us.dirtyBuffer = us.dirtyBuffer[:bytesToUpload]
 		case io.EOF: // Reader is empty
 			return
 		default:
@@ -327,13 +332,13 @@ func (us *UploadStream) doUpload(requestURL string, data io.Reader, buf []byte, 
 				return
 			}
 		}
-		data = bytes.NewReader(buf)
+		data = bytes.NewReader(us.dirtyBuffer)
 	}
 
 	if us.checksumHash != nil {
 		us.checksumHash.Reset()
 		if chunking {
-			us.checksumHash.Write(buf)
+			us.checksumHash.Write(us.dirtyBuffer)
 			sum := us.checksumHash.Sum(make([]byte, 0))
 			req.Header.Set("Upload-Checksum", fmt.Sprintf("%s %s", us.rawChecksumHashName, base64.StdEncoding.EncodeToString(sum)))
 		} else {

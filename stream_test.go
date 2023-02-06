@@ -85,7 +85,7 @@ var _ = Describe("UploadStream", func() {
 	})
 	AfterEach(func() {
 		if srvMock != nil {
-			srvMock.AssertCalled(GinkgoT()) // TODO: check if it checks all sequentally responses and no extra calls were made
+			srvMock.AssertCalled(GinkgoT())
 			Ω(srvMock.Close()).Should(Succeed())
 		}
 	})
@@ -112,7 +112,7 @@ var _ = Describe("UploadStream", func() {
 			})
 		})
 		DescribeTable("ordinary upload data without interrupts or errors",
-			func(copyCb func(s *UploadStream, data []byte) (int64, error)) {
+			func(copyCb func(s *UploadStream, data []byte) (int64, error), dataSize int) {
 				replies := []*reply.StdReply{
 					tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 				}
@@ -122,22 +122,36 @@ var _ = Describe("UploadStream", func() {
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
 				s := NewUploadStream(testClient, &u)
 				s.ChunkSize = 256
-				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1024))
+				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), int64(dataSize)))
 
-				res, err := copyCb(s, data)
-				Ω(int(res)).Should(Equal(1024))
-				Ω(err).Should(Succeed())
-				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1024}))
+				Ω(copyCb(s, data)).Should(BeEquivalentTo(dataSize))
+				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: int64(dataSize)}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 				Ω(s.Dirty()).Should(BeFalse())
 				Ω(data).Should(Equal(up.buf.Bytes()))
 			},
-			Entry("ReadFrom", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }),
-			Entry("Write", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }),
+			Entry("ReadFrom data aligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1024),
+			Entry("Write data aligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1024),
+			Entry("ReadFrom data unaligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1000),
+			Entry("Write data unaligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1000),
 		)
-		// TODO: test for empty reader for ReadFrom
-		Context("upload data with http error in the middle", func() {
-			When("ReadFrom", func() {
+		When("reader is empty passed to ReadFrom and offset is not 0", func() {
+			It("should do nothing and keep offset the same", func() {
+				u := Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 64}
+				s := NewUploadStream(testClient, &u)
+				s.ChunkSize = 256
+				data := make([]byte, 0)
+				rd := bytes.NewReader(data)
+
+				// First attempt before error
+				Ω(s.ReadFrom(rd)).Should(BeEquivalentTo(0))
+				Ω(s.LastResponse).Should(BeNil())
+				Ω(s.Dirty()).Should(BeFalse())
+				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 64}))
+			})
+		})
+		Context("retry to upload data after error", func() {
+			When("ReadFrom, error in the middle", func() {
 				It("retrying should work correctly", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), reply.InternalServerError(), tReply(reply.NoContent()), tReply(reply.NoContent()),
@@ -168,8 +182,38 @@ var _ = Describe("UploadStream", func() {
 					Ω(data).Should(Equal(up.buf.Bytes()))
 				})
 			})
-			// TODO: test when error on the last chunk and last chunk not aligned with chunksize (read/write not full dirty buffer)
-			When("Write method", func() {
+			When("ReadFrom, error at the end, data is not aligned", func() {
+				It("retrying should work correctly", func() {
+					replies := []*reply.StdReply{
+						tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), reply.InternalServerError(), tReply(reply.NoContent()),
+					}
+					up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
+					srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
+
+					u := Upload{Location: "/foo/bar", RemoteSize: 1024}
+					s := NewUploadStream(testClient, &u)
+					s.ChunkSize = 256
+					data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), 1000))
+					rd := bytes.NewReader(data)
+
+					// First attempt before error
+					copied, err := s.ReadFrom(rd)
+					Ω(err).Should(MatchError(ErrUnexpectedResponse))
+					Ω(copied).Should(BeEquivalentTo(1000))
+					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusInternalServerError))
+					Ω(s.Dirty()).Should(BeTrue())
+					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 768}))
+
+					// Second attempt after error
+					Ω(s.ReadFrom(rd)).Should(BeEquivalentTo(0))
+					Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
+					Ω(s.Dirty()).Should(BeFalse())
+					Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 1000}))
+
+					Ω(data).Should(Equal(up.buf.Bytes()))
+				})
+			})
+			When("Write, error in the middle", func() {
 				It("retrying should work correctly", func() {
 					replies := []*reply.StdReply{
 						tReply(reply.NoContent()), tReply(reply.NoContent()), reply.InternalServerError(), tReply(reply.NoContent()), tReply(reply.NoContent()),
