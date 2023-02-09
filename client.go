@@ -103,7 +103,6 @@ func (c *Client) GetUpload(u *Upload, location string) (response *http.Response,
 
 	switch response.StatusCode {
 	case http.StatusOK:
-		// TODO: can metadata, Expired be returned?
 		u2 := Upload{}
 		u2.Location = location
 		u2.Partial = response.Header.Get("Upload-Concat") == "partial"

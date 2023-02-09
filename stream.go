@@ -112,7 +112,7 @@ func (us *UploadStream) WithChecksumAlgorithm(name string) *UploadStream {
 	res := *us
 	res.LastResponse = nil
 	res.dirtyBuffer = nil
-	// TODO: check if server support this algo?
+
 	if alg, ok := checksum.GetAlgorithm(name); !ok {
 		panic(fmt.Sprintf("checksum algorithm %q does not supported", name))
 	} else {
