@@ -34,8 +34,6 @@ func NewUploadStream(client *Client, upload *Upload) *UploadStream {
 // NoChunked assigned to UploadStream.ChunkSize makes the uploading process not to use chunking
 const NoChunked = 0
 
-// TODO: remote ginkgo/gomega from go.mod
-
 // UploadStream is write-only stream with TUS requests as underlying implementation. During creation, the UploadStream
 // receives a pointer to Upload object, where it holds the current server offset to write data to. This offset is
 // continuously updated during uploading data to the server. Note, that stream takes ownership of upload, so the upload
