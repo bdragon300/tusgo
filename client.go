@@ -355,7 +355,7 @@ func (c *Client) ConcatenateUploads(final *Upload, partials []Upload, meta map[s
 		u2.Location = response.Header.Get("Location")
 		u2.Metadata = meta
 		*final = u2
-	case http.StatusNotFound, http.StatusGone: // TODO: check on server
+	case http.StatusNotFound, http.StatusGone:
 		err = ErrUploadDoesNotExist.WithResponse(response)
 	default:
 		err = ErrUnexpectedResponse

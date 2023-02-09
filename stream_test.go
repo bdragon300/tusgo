@@ -559,4 +559,3 @@ var _ = Describe("UploadStream", func() {
 		})
 	})
 })
-

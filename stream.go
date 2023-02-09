@@ -32,7 +32,8 @@ func NewUploadStream(client *Client, upload *Upload) *UploadStream {
 }
 
 // NoChunked assigned to UploadStream.ChunkSize makes the uploading process not to use chunking
-const NoChunked = 0 // TODO: example
+const NoChunked = 0
+
 // TODO: remote ginkgo/gomega from go.mod
 
 // UploadStream is write-only stream with TUS requests as underlying implementation. During creation, the UploadStream
@@ -88,8 +89,7 @@ type UploadStream struct {
 	//
 	// If SetUploadSize is true, then the very first request for an upload (i.e. when RemoteOffset == 0) will also
 	// contain the upload size, which is taken from Upload.RemoteSize field.
-	SetUploadSize bool // TODO: example
-	// TODO: example when RemoteOffset > 0
+	SetUploadSize bool
 
 	checksumHash        hash.Hash
 	rawChecksumHashName string
@@ -111,7 +111,6 @@ func (us *UploadStream) WithContext(ctx context.Context) *UploadStream {
 
 // WithChecksumAlgorithm sets the checksum algorithm to the copy of stream and returns it
 func (us *UploadStream) WithChecksumAlgorithm(name string) *UploadStream {
-	// TODO: example with checksum
 	res := *us
 	res.LastResponse = nil
 	res.dirtyBuffer = nil
@@ -176,8 +175,6 @@ func (us *UploadStream) ReadFrom(r io.Reader) (n int64, err error) {
 //
 // If the bytes to be uploaded doesn't fit to space left in the upload, we upload the data we can and return io.ErrShortWrite.
 func (us *UploadStream) Write(p []byte) (n int, err error) {
-	// TODO: example
-	// TODO: upload progress bar example
 	if err = us.validate(); err != nil {
 		return
 	}
