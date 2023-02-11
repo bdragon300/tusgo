@@ -112,30 +112,36 @@ var _ = Describe("UploadStream", func() {
 			})
 		})
 		DescribeTable("ordinary upload data without interrupts or errors",
-			func(copyCb func(s *UploadStream, data []byte) (int64, error), dataSize int) {
+			func(copyCb func(s *UploadStream, data []byte) (int64, error), dataSize, uploadSize int) {
 				replies := []*reply.StdReply{
 					tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()), tReply(reply.NoContent()),
 				}
 				up := mockTusUploader{replies: replies, buf: bytes.NewBuffer(make([]byte, 0))}
 				srvMock.AddMocks(up.makeRequest(http.MethodPatch, "/foo/bar", emptyHeaders).ReplyFunction(up.handler()))
 
-				u := Upload{Location: "/foo/bar", RemoteSize: 1024}
+				u := Upload{Location: "/foo/bar", RemoteSize: int64(uploadSize)}
 				s := NewUploadStream(testClient, &u)
 				s.ChunkSize = 256
 				data, _ := io.ReadAll(io.LimitReader(rand.New(rand.NewSource(time.Now().UnixNano())), int64(dataSize)))
 
 				Ω(copyCb(s, data)).Should(BeEquivalentTo(dataSize))
-				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: int64(dataSize)}))
+				Ω(u).Should(Equal(Upload{Location: "/foo/bar", RemoteSize: int64(uploadSize), RemoteOffset: int64(dataSize)}))
 				Ω(s.LastResponse.StatusCode).Should(Equal(http.StatusNoContent))
 				Ω(s.Dirty()).Should(BeFalse())
 				Ω(data).Should(Equal(up.buf.Bytes()))
 			},
-			Entry("ReadFrom data aligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1024),
-			Entry("Write data aligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1024),
-			Entry("ReadFrom data unaligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1000),
-			Entry("Write data unaligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1000),
+			Entry("ReadFrom data aligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1024, 1024),
+			Entry("Write data aligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1024, 1024),
+			Entry("ReadFrom data unaligned", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 1000, 1024),
+			Entry("Write data unaligned", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 1000, 1024),
+			Entry("ReadFrom data less than chunk size", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 100, 1024),
+			Entry("Write data less than chunk size", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 100, 1024),
+			Entry("ReadFrom data equal than chunk size", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 256, 1024),
+			Entry("Write data equal than chunk size", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 256, 1024),
+			Entry("ReadFrom data and upload less than chunk size", func(s *UploadStream, data []byte) (int64, error) { return s.ReadFrom(bytes.NewReader(data)) }, 100, 100),
+			Entry("Write data and upload less than chunk size", func(s *UploadStream, data []byte) (int64, error) { n, e := s.Write(data); return int64(n), e }, 100, 100),
 		)
-		When("reader is empty passed to ReadFrom and offset is not 0", func() {
+		When("reader passed to ReadFrom is empty and offset is not 0", func() {
 			It("should do nothing and keep offset the same", func() {
 				u := Upload{Location: "/foo/bar", RemoteSize: 1024, RemoteOffset: 64}
 				s := NewUploadStream(testClient, &u)
@@ -143,7 +149,6 @@ var _ = Describe("UploadStream", func() {
 				data := make([]byte, 0)
 				rd := bytes.NewReader(data)
 
-				// First attempt before error
 				Ω(s.ReadFrom(rd)).Should(BeEquivalentTo(0))
 				Ω(s.LastResponse).Should(BeNil())
 				Ω(s.Dirty()).Should(BeFalse())

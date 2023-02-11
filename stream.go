@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -294,15 +295,16 @@ func (us *UploadStream) uploadChunkImpl(requestURL string, data io.Reader, extra
 		}
 		bytesToUpload = int64(len(us.dirtyBuffer))
 		remoteBytesLeft := us.Upload.RemoteSize - offset
-		if bytesToUpload > remoteBytesLeft {
+		if bytesToUpload > remoteBytesLeft { // Buffer size is larger than the space left in the remote upload
 			bytesToUpload = remoteBytesLeft
+			us.dirtyBuffer = us.dirtyBuffer[:bytesToUpload]
 		}
 		if bytesToUpload == 0 {
-			return // Return early before creating a request
+			return
 		}
 	}
 
-	// Prevent reading from `data` if error occurred in the following calls
+	// Perform actions that can generate an error before invoking a reader
 	if us.checksumHash != nil && !chunking {
 		if err = us.client.ensureExtension("checksum-trailer"); err != nil {
 			return
@@ -315,12 +317,12 @@ func (us *UploadStream) uploadChunkImpl(requestURL string, data io.Reader, extra
 
 	if chunking {
 		t, e := io.ReadAtLeast(data, us.dirtyBuffer, int(bytesToUpload))
-		switch e {
-		case io.ErrUnexpectedEOF: // Reader has ended early
+		switch {
+		case errors.Is(e, io.EOF): // Reader is empty
+			return
+		case errors.Is(e, io.ErrUnexpectedEOF): // Reader has ended early
 			bytesToUpload = int64(t)
 			us.dirtyBuffer = us.dirtyBuffer[:bytesToUpload]
-		case io.EOF: // Reader is empty
-			return
 		default:
 			if e != nil {
 				err = e
