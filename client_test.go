@@ -907,10 +907,10 @@ func doUpload(dst *UploadStream, src *os.File) error {
 
 	// Reset offsets -- they will be further adjusted to the remote upload offset
 	if _, err := dst.Seek(0, io.SeekStart); err != nil {
-		panic(err)
+		return err
 	}
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		panic(err)
+		return err
 	}
 
 	for dst.Upload.RemoteOffset < dst.Upload.RemoteSize && attempts > 0 {
