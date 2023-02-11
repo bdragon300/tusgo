@@ -941,6 +941,21 @@ func doUpload(dst *UploadStream, src *os.File) error {
 	return nil
 }
 
+func createUploadFromFile(file *os.File, cl *Client, partial bool) *Upload {
+	// Open a file to be transferred
+	finfo, err := file.Stat()
+	if err != nil {
+		panic(err)
+	}
+
+	u := Upload{}
+	if _, err := cl.CreateUpload(&u, finfo.Size(), partial, nil); err != nil {
+		panic(err)
+	}
+	fmt.Printf("Location: %s\n", u.Location)
+	return &u
+}
+
 func ExampleClient_CreateUpload() {
 	baseURL, err := url.Parse("http://example.com/files")
 	if err != nil {
@@ -956,10 +971,10 @@ func ExampleClient_CreateUpload() {
 	if _, err = cl.CreateUpload(&u, 1024*1024*2, false, nil); err != nil {
 		panic(err)
 	}
-	fmt.Printf("Location: %s", u.Location)
+	fmt.Printf("Location: %s\n", u.Location)
 }
 
-func ExampleClient_ConcatenateUploads() {
+func ExampleClient_ConcatenateUploads_with_creation() {
 	baseURL, err := url.Parse("http://example.com/files")
 	if err != nil {
 		panic(err)
@@ -971,7 +986,8 @@ func ExampleClient_ConcatenateUploads() {
 
 	wg := &sync.WaitGroup{}
 	fileNames := []string{"/tmp/file1.txt", "/tmp/file2.txt"}
-	uploads := []*Upload{{Location: "http://example.com/files/foo/bar"}, {Location: "http://example.com/files/foo/baz"}}
+	// Assume that uploads were already been created
+	uploads := make([]*Upload, 2)
 	wg.Add(len(fileNames))
 
 	// Transfer partial uploads in parallel
@@ -980,14 +996,16 @@ func ExampleClient_ConcatenateUploads() {
 		ind := ind
 		go func() {
 			defer wg.Done()
-			fmt.Printf("Upload #%d: transferring file %s to %s\n", ind, fn, uploads[ind].Location)
 
 			f, err := os.Open(fn)
 			if err != nil {
 				panic(err)
 			}
 			defer f.Close()
+			uploads[ind] = createUploadFromFile(f, cl, true)
+			fmt.Printf("Upload #%d: Location: %s", ind, uploads[ind].Location)
 
+			fmt.Printf("Upload #%d: transferring file %s to %s\n", ind, fn, uploads[ind].Location)
 			stream := NewUploadStream(cl, uploads[ind])
 			if err = doUpload(stream, f); err != nil {
 				panic(err)
@@ -1021,7 +1039,7 @@ func ExampleClient_ConcatenateUploads() {
 		time.Sleep(2 * time.Second)
 	}
 
-	fmt.Printf("Concatenation finished. Offset: %d, Size: %d", u.RemoteOffset, u.RemoteSize)
+	fmt.Printf("Concatenation finished. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
 }
 
 func Example_creation_and_transfer() {
@@ -1034,27 +1052,18 @@ func Example_creation_and_transfer() {
 		panic(err)
 	}
 
-	// Open a file to be transferred
 	f, err := os.Open("/tmp/file.txt")
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
-	finfo, err := f.Stat()
-	if err != nil {
-		panic(err)
-	}
-	u := Upload{}
-	if _, err = cl.CreateUpload(&u, finfo.Size(), false, nil); err != nil {
-		panic(err)
-	}
-	fmt.Printf("Location: %s", u.Location)
+	u := createUploadFromFile(f, cl, false)
 
-	stream := NewUploadStream(cl, &u)
+	stream := NewUploadStream(cl, u)
 	if err = doUpload(stream, f); err != nil {
 		panic(err)
 	}
-	fmt.Println("Uploading complete")
+	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
 }
 
 func Example_creation_and_transfer_with_deferred_size() {
@@ -1071,7 +1080,7 @@ func Example_creation_and_transfer_with_deferred_size() {
 	if _, err = cl.CreateUpload(&u, SizeUnknown, false, nil); err != nil {
 		panic(err)
 	}
-	fmt.Printf("Location: %s", u.Location)
+	fmt.Printf("Location: %s\n", u.Location)
 
 	// Open a file to be transferred
 	f, err := os.Open("/tmp/file.txt")
@@ -1090,7 +1099,7 @@ func Example_creation_and_transfer_with_deferred_size() {
 	if err = doUpload(stream, f); err != nil {
 		panic(err)
 	}
-	fmt.Println("Uploading complete")
+	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
 }
 
 func Example_checksum() {
@@ -1134,33 +1143,27 @@ func Example_transfer_with_progress_watch() {
 	}
 
 	// Open a file to be transferred
-	f, err := os.Open("/tmp/file.txt")
+	f, err := os.Open("/tmp/file1.txt")
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
-	finfo, err := f.Stat()
-	if err != nil {
-		panic(err)
-	}
-	u := Upload{Location: "http://example.com/files/foo/bar", RemoteSize: finfo.Size()}
+	u := createUploadFromFile(f, cl, false)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			fmt.Printf("Progress: %d/%d (%.1f%%)", u.RemoteOffset, u.RemoteSize, float64(u.RemoteOffset/u.RemoteSize)*100)
+			fmt.Printf("Progress: %d/%d (%.1f%%)\n", u.RemoteOffset, u.RemoteSize, float64(u.RemoteOffset)/float64(u.RemoteSize)*100)
 			if u.RemoteOffset == u.RemoteSize {
 				return
 			}
 		}
 	}()
 
-	stream := NewUploadStream(cl, &u)
+	stream := NewUploadStream(cl, u)
 	if err = doUpload(stream, f); err != nil {
 		panic(err)
 	}
-	fmt.Println("Uploading complete")
+	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
 }
-
-// TODO: check if examples work
