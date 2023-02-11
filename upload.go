@@ -14,11 +14,26 @@ const (
 	OffsetUnknown = -1
 )
 
+// Upload represents an upload on the server.
 type Upload struct {
-	Location      string
-	RemoteSize    int64
-	RemoteOffset  int64
-	Metadata      map[string]string
+	// Location is the upload location. Can be either a path or URL
+	Location string
+
+	// RemoteSize is the remote upload size in bytes. Value SizeUnknown here means that the upload was created with
+	// deferred size and must be determined before the first data transfer.
+	RemoteSize int64
+
+	// RemoteOffset reflects the offset of remote upload. This field is continuously updated by UploadStream
+	// while transferring the data.
+	RemoteOffset int64
+
+	// Metadata is additional data assigned to the upload, when it was created on the server.
+	Metadata map[string]string
+
+	// UploadExpired represents the time when an upload expire on the server and won't be available since then. Nil
+	// value means that upload will not be expired.
 	UploadExpired *time.Time
-	Partial       bool
+
+	// Partial true value denotes that the upload is "partial" and meant to be concatenated into a "final" upload further.
+	Partial bool
 }
