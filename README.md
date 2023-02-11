@@ -1,6 +1,8 @@
 # tusgo
 
-Full-featured Go client for [TUS](tus.io) protocol.
+[![codecov](https://codecov.io/gh/bdragon300/tusgo/branch/master/graph/badge.svg?token=ZLI69A7FHO)](https://codecov.io/gh/bdragon300/tusgo)
+
+Full-featured Go client for [TUS](https://tus.io) protocol.
 
 ## Features
 
@@ -27,7 +29,7 @@ Full-featured Go client for [TUS](tus.io) protocol.
 go get github.com/bdragon300/tusgo
 ```
 
-Go v1.18 or later is required
+Go v1.18 or newer is required
 
 ## Example
 
