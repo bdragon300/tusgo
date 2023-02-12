@@ -15,7 +15,7 @@ import (
 )
 
 func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
-	// Adjust stream and file pointer to be equal to the remote pointer
+	// Set stream and file pointer to be equal to the remote pointer
 	// (if we resume the upload that was interrupted earlier)
 	if _, err := dst.Sync(); err != nil {
 		return err
@@ -32,7 +32,7 @@ func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
 		}
 		time.Sleep(5 * time.Second)
 		attempts--
-		_, err = io.Copy(dst, src) // Try to resume transfer after error
+		_, err = io.Copy(dst, src) // Try to resume the transfer again
 	}
 	if attempts == 0 {
 		return errors.New("too many attempts to upload the data")

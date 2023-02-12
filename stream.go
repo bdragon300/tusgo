@@ -190,8 +190,8 @@ func (us *UploadStream) Write(p []byte) (n int, err error) {
 	return int(uploaded), err
 }
 
-// Sync method adjusts the Upload.RemoteOffset value if it does not sync with server offset. Usually this method
-// need to be called, when an ErrOffsetsNotSynced error was returned by another UploadStream method.
+// Sync method sets the stream offset to be equal the server offset. Usually this method have to be called before
+// starting the transfer, or when an ErrOffsetsNotSynced error was returned by UploadStream
 func (us *UploadStream) Sync() (response *http.Response, err error) {
 	f := Upload{}
 	if response, err = us.client.GetUpload(&f, us.Upload.Location); err == nil {

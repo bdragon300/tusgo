@@ -37,7 +37,53 @@ go get github.com/bdragon300/tusgo
 
 Go v1.18 or newer is required
 
-## Example
+## Examples
+
+### Minimal file transfer example
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+)
+import "github.com/bdragon300/tusgo"
+
+func main() {
+	baseURL, _ := url.Parse("http://example.com/files")
+	cl := tusgo.NewClient(http.DefaultClient, baseURL)
+
+	// Assume that the Upload has been created on server earlier with size 1KiB
+	u := tusgo.Upload{Location: "http://example.com/files/foo/bar", RemoteSize: 1024 * 1024}
+	// Open a file we want to upload
+	f, err := os.Open("/tmp/file.txt")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	s := tusgo.NewUploadStream(cl, &u)
+	// Set stream and file pointers to be equal to the remote pointer
+	if _, err = s.Sync(); err != nil {
+		panic(err)
+	}
+	if _, err = f.Seek(s.Tell(), io.SeekStart); err != nil {
+		panic(err)
+	}
+	
+	written, err := io.Copy(s, f)
+	if err != nil {
+		panic(fmt.Sprintf("Written %d bytes, error: %s, last response: %v", written, err, s.LastResponse))
+	}
+	fmt.Printf("Written %d bytes\n", written)
+}
+```
+
+### Create an Upload and transfer the file with retrying on error
 
 ```go
 package main
@@ -54,7 +100,7 @@ import (
 import "github.com/bdragon300/tusgo"
 
 func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
-	// Adjust stream and file pointer to be equal to the remote pointer
+	// Set stream and file pointer to be equal to the remote pointer
 	// (if we resume the upload that was interrupted earlier)
 	if _, err := dst.Sync(); err != nil {
 		return err
@@ -71,7 +117,7 @@ func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
 		}
 		time.Sleep(5 * time.Second)
 		attempts--
-		_, err = io.Copy(dst, src) // Try to resume transfer after error
+		_, err = io.Copy(dst, src) // Try to resume the transfer again
 	}
 	if attempts == 0 {
 		return errors.New("too many attempts to upload the data")
@@ -80,7 +126,6 @@ func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
 }
 
 func CreateUploadFromFile(f *os.File, cl *tusgo.Client) *tusgo.Upload {
-	// Open a file to be transferred
 	finfo, err := f.Stat()
 	if err != nil {
 		panic(err)
@@ -94,10 +139,7 @@ func CreateUploadFromFile(f *os.File, cl *tusgo.Client) *tusgo.Upload {
 }
 
 func main() {
-	baseURL, err := url.Parse("http://example.com/files")
-	if err != nil {
-		panic(err)
-	}
+	baseURL, _ := url.Parse("http://example.com/files")
 	cl := tusgo.NewClient(http.DefaultClient, baseURL)
 
 	f, err := os.Open("/tmp/file.txt")
