@@ -1,8 +1,6 @@
 package checksum_test
 
 import (
-	"crypto"
-	"fmt"
 	"io"
 
 	"github.com/bdragon300/tusgo/checksum"
@@ -78,17 +76,3 @@ var _ = Describe("HashBase64ReadWriter", func() {
 	})
 })
 
-func ExampleNewHashBase64ReadWriter() {
-	data := []byte("Hello world!")
-	rw := checksum.NewHashBase64ReadWriter(crypto.SHA1.New(), "sha1 ")
-	if _, err := rw.Write(data); err != nil {
-		panic(err)
-	}
-
-	sum, err := io.ReadAll(rw)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("%s\n", sum)
-	// Output: sha1 00hq6RNueFa8QiEjhep5cJRHWAI=
-}

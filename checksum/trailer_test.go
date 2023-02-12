@@ -1,7 +1,6 @@
 package checksum_test
 
 import (
-	"crypto"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -62,23 +61,3 @@ var _ = Describe("DeferTrailerReader", func() {
 		})
 	})
 })
-
-func ExampleDeferTrailerReader() {
-	req, err := http.NewRequest(http.MethodPost, "http://example.com", nil)
-	if err != nil {
-		panic(err)
-	}
-
-	b64hash := checksum.NewHashBase64ReadWriter(crypto.SHA1.New(), "sha1 ")
-	body := io.TeeReader(strings.NewReader("Hello world!"), b64hash)
-	trailers := map[string]io.Reader{"Checksum": body}
-	req.Body = io.NopCloser(checksum.NewDeferTrailerReader(body, trailers, req))
-
-	// Request will contain header "Trailer: sha1 Checksum"
-	// and an HTTP trailer "Checksum: sha1 00hq6RNueFa8QiEjhep5cJRHWAI=" after request body
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	defer response.Body.Close()
-}
