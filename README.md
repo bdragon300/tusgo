@@ -1,15 +1,21 @@
 # tusgo
 
 [![codecov](https://codecov.io/gh/bdragon300/tusgo/branch/master/graph/badge.svg?token=ZLI69A7FHO)](https://codecov.io/gh/bdragon300/tusgo)
+[![Go Report Card](https://goreportcard.com/badge/github.com/bdragon300/tusgo)](https://goreportcard.com/report/github.com/bdragon300/tusgo)
+![GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/bdragon300/tusgo/run-tests.yml?branch=master)
+[![Go reference](https://pkg.go.dev/badge/github.com/bdragon300/tusgo)](https://pkg.go.dev/github.com/bdragon300/tusgo)
+![GitHub go.mod Go version (subdirectory of monorepo)](https://img.shields.io/github/go-mod/go-version/bdragon300/tusgo)
 
-Full-featured Go client for [TUS](https://tus.io) protocol.
+Full-featured Go client for [TUS](https://tus.io), a protocol for resumable uploads built on HTTP.
+
+Documentation is available at [pkg.go.dev](https://pkg.go.dev/github.com/bdragon300/tusgo)
 
 ## Features
 
-* Resumable chunked and streamed uploading, both using standard Go's `io.Writer` and `io.ReaderFrom` interfaces.
-* Client for uploads manipulation such as creation, deletion, concatenation, etc.
-* Intermediate data store (for chunked uploads) now is only in-memory. But the transfer can be resumed if your data
-  source is seekable.
+* Resumable Upload writer with chunked and streamed mode support. Conforms the `io.Writer`/`io.ReaderFrom`, which allows 
+  to use the standard utils such as `io.Copy`
+* Client for Upload manipulation such as creation, deletion, concatenation, etc.
+* Intermediate data store (for chunked Uploads) now is only in-memory
 * Server extensions are supported:
 	* `creation` extension -- upload creation
 	* `creation-defer-length` -- upload creation without size. Its size is set on the first data transfer
