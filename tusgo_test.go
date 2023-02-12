@@ -14,39 +14,25 @@ import (
 	"github.com/bdragon300/tusgo"
 )
 
-// DoUpload does the transfer of the data until we will finish the upload, or until too many errors will occur
-func DoUpload(dst *tusgo.UploadStream, src *os.File) error {
+func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
+	// Adjust stream and file pointer to be equal to the remote pointer
+	// (if we resume the upload that was interrupted earlier)
+	if _, err := dst.Sync(); err != nil {
+		return err
+	}
+	if _, err := src.Seek(dst.Tell(), io.SeekStart); err != nil {
+		return err
+	}
+
+	_, err := io.Copy(dst, src)
 	attempts := 10
-
-	// Reset offsets -- they will be further adjusted to the remote upload offset
-	if _, err := dst.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
-	for dst.Upload.RemoteOffset < dst.Upload.RemoteSize && attempts > 0 {
-		_, err := io.Copy(dst, src)
-		if err == nil {
-			break // Transfer has finished
+	for err != nil && attempts > 0 {
+		if _, ok := err.(net.Error); !ok && !errors.Is(err, tusgo.ErrChecksumMismatch) {
+			return err // Permanent error, no luck
 		}
-
+		time.Sleep(5 * time.Second)
 		attempts--
-		if errors.Is(err, tusgo.ErrOffsetsNotSynced) {
-			// Sync local and remote offsets
-			if _, err = dst.Sync(); err != nil {
-				return err
-			}
-			// Also adjust the file pointer
-			if _, err = src.Seek(dst.Tell(), io.SeekStart); err != nil {
-				return err
-			}
-		} else if errors.Is(err, tusgo.ErrChecksumMismatch) {
-			continue // Checksum mismatch, try to make a transfer again
-		} else if _, ok := err.(net.Error); !ok {
-			return err // Permanent error
-		}
+		_, err = io.Copy(dst, src) // Try to resume transfer after error
 	}
 	if attempts == 0 {
 		return errors.New("too many attempts to upload the data")
@@ -120,7 +106,7 @@ func ExampleClient_ConcatenateUploads_withCreation() {
 
 			fmt.Printf("Upload #%d: transferring file %s to %s\n", ind, fn, uploads[ind].Location)
 			stream := tusgo.NewUploadStream(cl, uploads[ind])
-			if err = DoUpload(stream, f); err != nil {
+			if err = UploadWithRetry(stream, f); err != nil {
 				panic(err)
 			}
 		}()
@@ -173,7 +159,7 @@ func Example_creationAndTransfer() {
 	u := CreateUploadFromFile(f, cl, false)
 
 	stream := tusgo.NewUploadStream(cl, u)
-	if err = DoUpload(stream, f); err != nil {
+	if err = UploadWithRetry(stream, f); err != nil {
 		panic(err)
 	}
 	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
@@ -209,7 +195,7 @@ func Example_creationAndTransferWithDeferredSize() {
 
 	stream := tusgo.NewUploadStream(cl, &u)
 	stream.SetUploadSize = true
-	if err = DoUpload(stream, f); err != nil {
+	if err = UploadWithRetry(stream, f); err != nil {
 		panic(err)
 	}
 	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)
@@ -239,7 +225,7 @@ func Example_checksum() {
 
 	// We want to use sha1
 	stream := tusgo.NewUploadStream(cl, &u).WithChecksumAlgorithm("sha1")
-	if err = DoUpload(stream, f); err != nil {
+	if err = UploadWithRetry(stream, f); err != nil {
 		panic(err)
 	}
 	fmt.Println("Uploading complete")
@@ -275,7 +261,7 @@ func Example_transferWithProgressWatch() {
 	}()
 
 	stream := tusgo.NewUploadStream(cl, u)
-	if err = DoUpload(stream, f); err != nil {
+	if err = UploadWithRetry(stream, f); err != nil {
 		panic(err)
 	}
 	fmt.Printf("Uploading complete. Offset: %d, Size: %d\n", u.RemoteOffset, u.RemoteSize)

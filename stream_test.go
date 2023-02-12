@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -564,3 +566,25 @@ var _ = Describe("UploadStream", func() {
 		})
 	})
 })
+
+func Example_minimal() {
+	baseURL, err := url.Parse("http://example.com/files")
+	if err != nil {
+		panic(err)
+	}
+	cl := NewClient(http.DefaultClient, baseURL)
+
+	u := Upload{Location: "http://example.com/files/foo/bar", RemoteSize: 1024 * 1024}
+	f, err := os.Open("/tmp/file.txt")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	s := NewUploadStream(cl, &u)
+	written, err := io.Copy(s, f)
+	if err != nil {
+		panic(fmt.Sprintf("Written %d bytes, error: %s", written, err))
+	}
+	fmt.Printf("Written %d bytes\n", written)
+}
