@@ -49,38 +49,29 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 )
 import "github.com/bdragon300/tusgo"
 
-func doUploadFile(dst *tusgo.UploadStream, f *os.File) error {
+func UploadWithRetry(dst *tusgo.UploadStream, src *os.File) error {
+	// Adjust stream and file pointer to be equal to the remote pointer
+	// (if we resume the upload that was interrupted earlier)
+	if _, err := dst.Sync(); err != nil {
+		return err
+	}
+	if _, err := src.Seek(dst.Tell(), io.SeekStart); err != nil {
+		return err
+	}
+
+	_, err := io.Copy(dst, src)
 	attempts := 10
-
-	// Sync stream and file offsets
-	if _, err := dst.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
-	for dst.Upload.RemoteOffset < dst.Upload.RemoteSize && attempts > 0 {
-		_, err := io.Copy(dst, f)
-		if err == nil {
-			break // Transfer has finished
-		}
-
-		// Error handling
-		attempts--
-		if errors.Is(err, tusgo.ErrOffsetsNotSynced) { // Offset is differ from server offset, sync
-			if _, err = dst.Sync(); err != nil {
-				return err
-			}
-			if _, err = f.Seek(dst.Tell(), io.SeekStart); err != nil {
-				return err
-			}
-		} else if _, ok := err.(net.Error); !ok {
+	for err != nil && attempts > 0 {
+		if _, ok := err.(net.Error); !ok && !errors.Is(err, tusgo.ErrChecksumMismatch) {
 			return err // Permanent error, no luck
 		}
+		time.Sleep(5 * time.Second)
+		attempts--
+		_, err = io.Copy(dst, src) // Try to resume transfer after error
 	}
 	if attempts == 0 {
 		return errors.New("too many attempts to upload the data")
@@ -88,7 +79,7 @@ func doUploadFile(dst *tusgo.UploadStream, f *os.File) error {
 	return nil
 }
 
-func createUploadFromFile(f *os.File, cl *tusgo.Client) *tusgo.Upload {
+func CreateUploadFromFile(f *os.File, cl *tusgo.Client) *tusgo.Upload {
 	// Open a file to be transferred
 	finfo, err := f.Stat()
 	if err != nil {
@@ -114,10 +105,10 @@ func main() {
 		panic(err)
 	}
 	defer f.Close()
-	u := createUploadFromFile(f, cl)
+	u := CreateUploadFromFile(f, cl)
 
 	stream := tusgo.NewUploadStream(cl, u)
-	if err = doUploadFile(stream, f); err != nil {
+	if err = UploadWithRetry(stream, f); err != nil {
 		panic(err)
 	}
 }
